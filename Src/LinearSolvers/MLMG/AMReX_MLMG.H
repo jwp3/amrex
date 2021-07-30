@@ -176,6 +176,10 @@ public:
     int getNumIters () const noexcept { return m_iter_fine_resnorm0.size(); }
     Vector<int> const& getNumCGIters () const noexcept { return m_niters_cg; }
 
+    /* JORDI SECTION */
+    void syncMGAddVcycle (int amrlev, int mglev_top);
+    /* end JORDI SECTION */
+
 private:
 
     int verbose = 1;
@@ -275,6 +279,11 @@ private:
 
     void checkPoint (const Vector<MultiFab*>& a_sol, const Vector<MultiFab const*>& a_rhs,
                      Real a_tol_rel, Real a_tol_abs, const char* a_file_name) const;
+
+    /* JORDI SECTION */
+    Vector<std::unique_ptr<MultiFab>> cor_smooth;
+    Vector<std::unique_ptr<MultiFab>> Acor;
+    /* end JORDI SECTION */
 };
 
 }
