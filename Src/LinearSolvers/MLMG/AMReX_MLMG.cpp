@@ -235,10 +235,7 @@ void MLMG::oneIter (int iter)
 
     for (int alev = finest_amr_lev; alev > 0; --alev)
     {
-        /* JORDI SECTION */
-        //miniCycle(alev);
-        syncMGAddVcycle(alev, 0);
-        /* end JORDI SECTION */
+        miniCycle(alev);
 
         MultiFab::Add(*sol[alev], *cor[alev][0], 0, 0, ncomp, nghost);
 
@@ -258,14 +255,11 @@ void MLMG::oneIter (int iter)
             makeSolvable(0,0,res[0][0]);
         }
         
-        /* JORDI SECTION */
-        //if (iter < max_fmg_iters) {
-        //    mgFcycle ();
-        //} else {
-        //    mgVcycle (0, 0);
-        //}
-        syncMGAddVcycle(0, 0);
-        /* end JORDI SECTION */
+        if (iter < max_fmg_iters) {
+            mgFcycle ();
+        } else {
+            mgVcycle (0, 0);
+        }
 
         MultiFab::Add(*sol[0], *cor[0][0], 0, 0, ncomp, 0);
     }
@@ -284,10 +278,7 @@ void MLMG::oneIter (int iter)
         // Update fine AMR level correction
         computeResWithCrseCorFineCor(alev);
 
-        /* JORDI SECTION */
-        //miniCycle(alev);
-        syncMGAddVcycle(alev, 0);
-        /* end JORDI SECTION */
+        miniCycle(alev);
 
         MultiFab::Add(*sol[alev], *cor[alev][0], 0, 0, ncomp, nghost);
 
@@ -1273,26 +1264,6 @@ MLMG::prepareForSolve (const Vector<MultiFab*>& a_sol, const Vector<MultiFab con
         }
     }
 
-    /* JORDI SECTION */
-    cor_smooth.resize(namrlevs);
-    for (int alev = 0; alev <= finest_amr_lev; ++alev)
-    {
-        cor_smooth[alev] = std::make_unique<MultiFab>(res[alev][0].boxArray(),
-                                                      res[alev][0].DistributionMap(),
-                                                      ncomp, ng, MFInfo(),
-                                                      *linop.Factory(alev,0));
-    }
-
-    Acor.resize(namrlevs);
-    for (int alev = 0; alev <= finest_amr_lev; ++alev)
-    {
-        Acor[alev] = std::make_unique<MultiFab>(res[alev][0].boxArray(),
-                                                res[alev][0].DistributionMap(),
-                                                ncomp, ng, MFInfo(),
-                                                *linop.Factory(alev,0));
-    }
-    /* end JORDI SECTION */
-
     cor_hold.resize(std::max(namrlevs-1,1));
     {
         const int alev = 0;
@@ -2028,185 +1999,6 @@ MLMG::checkPoint (const Vector<MultiFab*>& a_sol, const Vector<MultiFab const*>&
     }
 
     linop.checkPoint(file_name+"/linop");
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-/*********************************************************
- *
- *      Routines for additive and/or async MG solvers
- *
- *********************************************************/
-
-//Real
-//MLMG::asyncSolve (const Vector<MultiFab*>& a_sol, const Vector<MultiFab const*>& a_rhs,
-//                  Real a_tol_rel, Real a_tol_abs, const char* checkpoint_file)
-//{
-//
-//}
-
-void
-MLMG::syncMGAddVcycle (int amrlev, int mglev_top)
-{
-    const int ncomp = linop.getNComp();
-    const int mglev_bottom = linop.NMGLevels(amrlev) - 1;
-    bool skip_fillboundary;
-    int nghost = 0;
-    if (cf_strategy == CFStrategy::ghostnodes) nghost = linop.getNGrow();
-
-    MultiFab& cor_top = *cor[amrlev][mglev_top];
-    MultiFab& res_top = res[amrlev][mglev_top];
-
-    if (linop.NMGLevels(amrlev) < 1){
-       return;
-    }
-    else if (amrlev != 0 || linop.NMGLevels(amrlev) == 1){
-       cor_top.setVal(0.0);
-       int num_top_smooth_sweeps = 1;
-       skip_fillboundary = true;
-       for (int i = 0; i < num_top_smooth_sweeps; ++i) {
-           linop.smooth(amrlev, mglev_top, cor_top, res_top, skip_fillboundary);
-           skip_fillboundary = false;
-       }
-    }
-    else {
-       if (0){
-          /* Restrict finest residual to all coarse grids */
-          for (int mglev = mglev_top; mglev < mglev_bottom; mglev++)
-          {
-              linop.restriction(amrlev, mglev+1, res[amrlev][mglev+1], res[amrlev][mglev]);
-          }
-          /* Concurrent smooth and and bottom solve*/
-          for (int mglev = mglev_top; mglev <= mglev_bottom; mglev++)
-          {
-             if (mglev == mglev_bottom)
-             {
-                 bottomSolve();
-             }
-             else if (mglev == mglev_top)
-             {
-                 cor[amrlev][mglev]->setVal(0.0);
-             }
-             else
-             {
-                 cor[amrlev][mglev]->setVal(0.0);
-                 skip_fillboundary = true;
-                 int num_smooth_sweeps = 1;
-                 for (int i = 0; i < num_smooth_sweeps; ++i) {
-                     linop.smooth(amrlev, mglev, *cor[amrlev][mglev], res[amrlev][mglev],
-                                  skip_fillboundary);
-                     skip_fillboundary = false;
-                 }
-             }   
-          }
-          /* Sum up corrections using interpolation */
-          for (int mglev = mglev_bottom-1; mglev >= mglev_top; mglev--)
-          {
-              addInterpCorrection(amrlev, mglev);
-          }
-       }
-       else {
-          linop.restriction(amrlev, mglev_top+1, res[amrlev][mglev_top+1], res[amrlev][mglev_top]);
- 
-          int inner_niters = 1;
-          for (int inner_iter = 0; inner_iter < inner_niters; inner_iter++){
-             for (int mglev = mglev_top+1; mglev < mglev_bottom; ++mglev)
-             {
-                if (mglev == mglev_top+1 && inner_iter > 0){
-                   skip_fillboundary = false;
-                }
-                else {
-                   cor[amrlev][mglev]->setVal(0.0);
-                   skip_fillboundary = true;
-                }
-                for (int i = 0; i < 1; ++i)
-                {
-                    linop.smooth(amrlev, mglev, *cor[amrlev][mglev], res[amrlev][mglev],
-                                 skip_fillboundary);
-                    skip_fillboundary = false;
-                }
-                computeResOfCorrection(amrlev, mglev);
-                linop.restriction(amrlev, mglev+1, res[amrlev][mglev+1], rescor[amrlev][mglev]);
-             }
-
-             bottomSolve();
-
-             for (int mglev = mglev_bottom-1; mglev >= mglev_top+1; --mglev)
-             {
-                addInterpCorrection(amrlev, mglev);
-                skip_fillboundary = false;
-                for (int i = 0; i < 1; ++i)
-                {
-                    linop.smooth(amrlev, mglev, *cor[amrlev][mglev], res[amrlev][mglev],
-                                 skip_fillboundary);
-                }
-             }
-          }
-
-          cor[amrlev][mglev_top]->setVal(0.0);
-          addInterpCorrection(amrlev, mglev_top);
-       }
-
-       MultiFab& cor_smooth_alev = *cor_smooth[amrlev];
-       int num_top_smooth_sweeps = 1000;
-      
-       //if (0) { 
-          cor_smooth_alev.setVal(0.0);
-          skip_fillboundary = true;
-          for (int i = 0; i < num_top_smooth_sweeps; ++i) {
-              linop.smooth(amrlev, mglev_top, cor_smooth_alev, res_top, skip_fillboundary);
-              skip_fillboundary = false;
-          }
- 
-          MultiFab& Acor_alev = *Acor[amrlev];
-          MultiFab& rescor_top = rescor[amrlev][mglev_top];
-
-          linop.correctionResidual(amrlev, mglev_top, rescor_top, cor_smooth_alev, res_top, BCMode::Homogeneous);
-
-          Real beta_numer = linop.xdoty(amrlev, mglev_top, cor_top, rescor_top, false);
-          linop.apply(amrlev, mglev_top, Acor_alev, cor_top, MLLinOp::BCMode::Homogeneous, MLLinOp::StateMode::Correction);
-          Real beta_denom = linop.xdoty(amrlev, mglev_top, cor_top, Acor_alev, false);
-
-          Real beta = beta_numer/beta_denom;
-          cor_top.mult(beta);
-       //}
-
-       //cor_smooth_alev.setVal(0.0);
-       num_top_smooth_sweeps = 1000;
-       //skip_fillboundary = true;
-       for (int i = 0; i < num_top_smooth_sweeps; ++i) {
-           linop.smooth(amrlev, mglev_top, cor_smooth_alev, res_top, skip_fillboundary);
-           skip_fillboundary = false;
-       }
-
-       MultiFab::Add(cor_top, cor_smooth_alev, 0, 0, ncomp, nghost);
-    }
 }
 
 }

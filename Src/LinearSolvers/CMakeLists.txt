@@ -8,6 +8,8 @@ target_sources(amrex
    PRIVATE
    MLMG/AMReX_MLMG.H
    MLMG/AMReX_MLMG.cpp
+   MLMG/AMReX_MLAsyncMG.H
+   MLMG/AMReX_MLAsyncMG.cpp
    MLMG/AMReX_MLMG_K.H
    MLMG/AMReX_MLMG_${AMReX_SPACEDIM}D_K.H
    MLMG/AMReX_MLMGBndry.H

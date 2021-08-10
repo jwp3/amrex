@@ -2,6 +2,7 @@
 #define MY_TEST_H_
 
 #include <AMReX_MLMG.H>
+#include <AMReX_MLAsyncMG.H>
 
 #ifdef AMREX_USE_HYPRE
 #include <AMReX_Hypre.H>
@@ -51,6 +52,7 @@ private:
     int max_semicoarsening_level = 0;
     bool use_hypre = false;
     bool use_petsc = false;
+    bool use_async_solver = false;
 
 #ifdef AMREX_USE_HYPRE
     int hypre_interface_i = 1;  // 1. structed, 2. semi-structed, 3. ij

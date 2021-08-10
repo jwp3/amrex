@@ -79,6 +79,9 @@ class MLLinOp
 public:
 
     friend class MLMG;
+    /* start JORDI section */
+    friend class MLAsyncMG;
+    /* end JORDI section */
     friend class MLCGSolver;
     friend class MLPoisson;
     friend class MLABecLaplacian;
