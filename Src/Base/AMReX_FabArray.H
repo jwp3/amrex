@@ -171,6 +171,20 @@ struct FBData {
     Vector<MPI_Request> send_reqs;
     int                 tag;
 
+    /* begin JORDI section */
+    Vector<int> recv_flags;
+    Vector<int> recv_count;
+    Vector<char*> recv_data_inFlight;
+    Vector<char*> recv_data_finalMsg;
+    Vector<int> recvd_finalMsg;
+    Vector<MPI_Request> recv_reqs_finalMsg;
+    Vector<MPI_Status>  recv_stat_finalMsg;
+
+    Vector<int> send_flags;
+    Vector<int> send_count;
+    Vector<MPI_Status> send_stat;
+    Vector<int> send_finalMsg;
+    /* end JORDI section */
 };
 
 // Data used in non-blocking parallel copy.
@@ -812,6 +826,23 @@ public:
     void FillBoundary (int scomp, int ncomp, const Periodicity& period, bool cross = false);
     void FillBoundary (int scomp, int ncomp, const IntVect& nghost, const Periodicity& period, bool cross = false);
 
+    /* begin JORDI section */
+    template <class F=FAB, typename std::enable_if<IsBaseFab<F>::value,int>::type = 0>
+    void AsyncFillBoundary (int scomp,
+                            int ncomp,
+                            const IntVect& nghost,
+                            const Periodicity& period,
+                            bool cross,
+                            bool enforce_periodicity_only = false);
+    void AsyncSetup ();
+    void AsyncClearMem ();
+    void AsyncCleanup (int scomp, int ncomp, const IntVect& nghost,
+                       const Periodicity& period, bool cross,
+                       bool enforce_periodicity_only = false);
+    int AsyncCheckConverge (int extern_converge,
+                            int num_msgs_per_neighb);
+    /* end JORDI section */
+
     void FillBoundary_nowait (bool cross = false);
     void FillBoundary_nowait (const Periodicity& period, bool cross = false);
     void FillBoundary_nowait (int scomp, int ncomp, bool cross = false);
@@ -919,6 +950,7 @@ public:
                                         CpOp op, bool is_thread_safe);
 
 #endif
+
 
 protected:
 
@@ -1050,7 +1082,60 @@ public:
                           Vector<int> const&         send_rank,
                           Vector<MPI_Request>&       send_reqs,
                           int                        SeqNum);
+
+    /* begin JORDI section */
+
+    void AsyncPostSnds (Vector<char*> const&       send_data,
+                          Vector<std::size_t> const& send_size,
+                          Vector<int> const&         send_rank,
+                          Vector<MPI_Request>&       send_reqs,
+                          int                        SeqNum) const;
+
+    void AsyncPostRcvs (const MapOfCopyComTagContainers&       RcvTags,
+                   char*&                                 the_recv_data,
+                   Vector<char*>&                         recv_data,
+                   Vector<std::size_t>&                   recv_size,
+                   Vector<int>&                           recv_from,
+                   Vector<MPI_Request>&                   recv_reqs,
+                   int                                    ncomp,
+                   int                                    SeqNum) const;
+
+    AMREX_NODISCARD TheFaArenaPointer AsyncPostRcvs (const MapOfCopyComTagContainers&       RcvTags,
+                   Vector<char*>&                         recv_data,
+                   Vector<std::size_t>&                   recv_size,
+                   Vector<int>&                           recv_from,
+                   Vector<MPI_Request>&                   recv_reqs,
+                   int                                    ncomp,
+                   int                                    SeqNum) const;
+
+    AMREX_NODISCARD TheFaArenaPointer AsyncPrepareSendBuffers (const MapOfCopyComTagContainers&     SndTags,
+                                       Vector<char*>&                       send_data,
+                                       Vector<std::size_t>&                 send_size,
+                                       Vector<int>&                         send_rank,
+                                       Vector<MPI_Request>&                 send_reqs,
+                                       Vector<const CopyComTagsContainer*>& send_cctc,
+                                       int                                  ncomp) const;
+    
+    void AsyncPrepareSendBuffers (const MapOfCopyComTagContainers&     SndTags,
+                                       char*&                               the_send_data,
+                                       Vector<char*>&                       send_data,
+                                       Vector<std::size_t>&                 send_size,
+                                       Vector<int>&                         send_rank,
+                                       Vector<MPI_Request>&                 send_reqs,
+                                       Vector<const CopyComTagsContainer*>& send_cctc,
+                                       int                                  ncomp) const;
+
+    int AsyncCheckSendConverge (int extern_converge,
+                                int num_msgs_per_neighb);
+
+    int AsyncCheckRecvConverge ();
+
+    /* end JORDI section */
 #endif
+
+    /* begin JORDI section */
+    FBData<FAB> *async_fbd;
+    /* end JORDI section */
 
     std::unique_ptr<FBData<FAB>> fbd;
 

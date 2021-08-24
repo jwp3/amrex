@@ -1152,3 +1152,687 @@ FillBoundary (Vector<MF*> const& mf, const Periodicity& a_period = Periodicity::
     }
     FillBoundary(mf, scomp, ncomp, nghost, period);
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+//#ifdef JORDI_DUMMY
+
+
+/*********************************************
+ *
+ *           begin JORDI section
+ *
+ * *******************************************/
+
+
+template <class FAB>
+template <class F, typename std::enable_if<IsBaseFab<F>::value,int>::type Z>
+void
+FabArray<FAB>::AsyncFillBoundary (int scomp, int ncomp, const IntVect& nghost,
+                                  const Periodicity& period, bool cross,
+                                  bool enforce_periodicity_only)
+{
+    /******************************** 
+     * 
+     * FBEP_nowait()
+     *
+     * *****************************/
+{
+    bool work_to_do;
+    if (enforce_periodicity_only) {
+        work_to_do = period.isAnyPeriodic();
+    } else {
+        work_to_do = nghost.max() > 0;
+    }
+    if (!work_to_do) { return; }
+
+    const FB& TheFB = getFB(nghost, period, cross, enforce_periodicity_only);
+
+    if (ParallelContext::NProcsSub() == 1)
+    {
+        //
+        // There can only be local work to do.
+        //
+        int N_locs = (*TheFB.m_LocTags).size();
+        if (N_locs == 0) return;
+#ifdef AMREX_USE_GPU
+        if (Gpu::inLaunchRegion())
+        {
+#if ( defined(__CUDACC__) && (__CUDACC_VER_MAJOR__ >= 10))
+            if (Gpu::inGraphRegion())
+            {
+                FB_local_copy_cuda_graph_1(TheFB, scomp, ncomp);
+            }
+            else
+#endif
+            {
+                FB_local_copy_gpu(TheFB, scomp, ncomp);
+            }
+        }
+        else
+#endif
+        {
+            FB_local_copy_cpu(TheFB, scomp, ncomp);
+        }
+
+    }
+
+#ifdef BL_USE_MPI
+
+    //
+    // Do this before prematurely exiting if running in parallel.
+    // Otherwise sequence numbers will not match across MPI processes.
+    //
+    int SeqNum = 10;//ParallelDescriptor::SeqNum();
+
+    const int N_locs = TheFB.m_LocTags->size();
+    const int N_rcvs = TheFB.m_RcvTags->size();
+    const int N_snds = TheFB.m_SndTags->size();
+
+    if (N_locs == 0 && N_rcvs == 0 && N_snds == 0) {
+        // No work to do.
+        return;
+    }
+
+    async_fbd->fb    = &TheFB;
+    async_fbd->scomp = scomp;
+    async_fbd->ncomp = ncomp;
+    async_fbd->nghost = nghost;
+    async_fbd->period = period;
+    async_fbd->cross = cross;
+    async_fbd->epo   = enforce_periodicity_only;
+    async_fbd->tag   = SeqNum;
+
+
+    //
+    // Post rcvs. Allocate one chunk of space to hold'm all.
+    //
+
+    if (N_rcvs > 0) {
+        AsyncPostRcvs(*TheFB.m_RcvTags, async_fbd->the_recv_data,
+                      async_fbd->recv_data, async_fbd->recv_size, async_fbd->recv_from, async_fbd->recv_reqs,
+                      ncomp, SeqNum);
+    }
+
+
+    //
+    // Post send's
+    //
+    char*&                          the_send_data = async_fbd->the_send_data;
+    Vector<char*> &                     send_data = async_fbd->send_data;
+    Vector<std::size_t>                 send_size;
+    Vector<int>                         send_rank;
+    Vector<MPI_Request>&                send_reqs = async_fbd->send_reqs;
+    Vector<const CopyComTagsContainer*> send_cctc;
+
+
+    if (N_snds > 0)
+    {
+        AsyncPrepareSendBuffers(*TheFB.m_SndTags, the_send_data, send_data, send_size, send_rank,
+                           send_reqs, send_cctc, ncomp);
+
+#ifdef AMREX_USE_GPU
+        if (Gpu::inLaunchRegion())
+        {
+#if ( defined(__CUDACC__) && (__CUDACC_VER_MAJOR__ >= 10))
+            if (Gpu::inGraphRegion()) {
+                FB_pack_send_buffer_cuda_graph(TheFB, scomp, ncomp, send_data, send_size, send_cctc);
+            }
+            else
+#endif
+            {
+                pack_send_buffer_gpu(*this, scomp, ncomp, send_data, send_size, send_cctc);
+            }
+        }
+        else
+#endif
+        {
+            pack_send_buffer_cpu(*this, scomp, ncomp, send_data, send_size, send_cctc);
+        }
+
+        AMREX_ASSERT(send_reqs.size() == N_snds);
+        AsyncPostSnds(send_data, send_size, send_rank, send_reqs, SeqNum);
+    }
+
+    //
+    // Do the local work.  Hope for a bit of communication/computation overlap.
+    //
+    if (N_locs > 0)
+    {
+#ifdef AMREX_USE_GPU
+        if (Gpu::inLaunchRegion())
+        {
+#if ( defined(__CUDACC__) && (__CUDACC_VER_MAJOR__ >= 10) )
+            if (Gpu::inGraphRegion()) {
+                FB_local_copy_cuda_graph_n(TheFB, scomp, ncomp);
+            }
+            else
+#endif
+            {
+                FB_local_copy_gpu(TheFB, scomp, ncomp);
+            }
+        }
+        else
+#endif
+        {
+            FB_local_copy_cpu(TheFB, scomp, ncomp);
+        }
+    }
+}
+
+
+
+
+
+    /********************************
+     *
+     * FillBoundary_finish()
+     *
+     * *****************************/
+
+{
+    if (!async_fbd) { n_filled = IntVect::TheZeroVector(); return; }
+
+    const FB* TheFB = async_fbd->fb;
+    const int N_rcvs = TheFB->m_RcvTags->size();
+    if (N_rcvs > 0)
+    {
+        Vector<const CopyComTagsContainer*> recv_cctc(N_rcvs,nullptr);
+        for (int k = 0; k < N_rcvs; k++)
+        {
+            if (async_fbd->recv_size[k] > 0)
+            {
+                auto const& cctc = TheFB->m_RcvTags->at(async_fbd->recv_from[k]);
+                recv_cctc[k] = &cctc;
+            }
+        }
+
+        int actual_n_rcvs = N_rcvs - std::count(async_fbd->recv_data.begin(), async_fbd->recv_data.end(), nullptr);
+
+	//ParallelDescriptor::Waitall(async_fbd->recv_reqs, async_fbd->recv_stat);
+        bool is_thread_safe = TheFB->m_threadsafe_rcv;
+#ifdef AMREX_USE_GPU
+        if (Gpu::inLaunchRegion())
+        {
+#if ( defined(__CUDACC__) && (__CUDACC_VER_MAJOR__ >= 10) )
+            if (Gpu::inGraphRegion())
+            {
+                FB_unpack_recv_buffer_cuda_graph(*TheFB, async_fbd->scomp, async_fbd->ncomp,
+                                                 async_fbd->recv_data, async_fbd->recv_size,
+                                                 recv_cctc, is_thread_safe);
+            }
+            else
+#endif
+            {
+                unpack_recv_buffer_gpu(*this, async_fbd->scomp, async_fbd->ncomp, async_fbd->recv_data, async_fbd->recv_size,
+                                       recv_cctc, FabArrayBase::COPY, is_thread_safe);
+            }
+        }
+        else
+#endif
+        {
+            unpack_recv_buffer_cpu(*this, async_fbd->scomp, async_fbd->ncomp, async_fbd->recv_data, async_fbd->recv_size,
+                                   recv_cctc, FabArrayBase::COPY, is_thread_safe);
+        }
+    }
+
+    //ParallelDescriptor::Waitall(async_fbd->send_reqs, async_fbd->send_stat);
+
+}
+#endif /*BL_USE_MPI*/
+}
+
+
+#ifdef BL_USE_MPI
+
+template <class FAB>
+AMREX_NODISCARD TheFaArenaPointer
+FabArray<FAB>::AsyncPrepareSendBuffers (const MapOfCopyComTagContainers&     SndTags,
+                                   Vector<char*>&                       send_data,
+                                   Vector<std::size_t>&                 send_size,
+                                   Vector<int>&                         send_rank,
+                                   Vector<MPI_Request>&                 send_reqs,
+                                   Vector<const CopyComTagsContainer*>& send_cctc,
+                                   int                                  ncomp) const
+{
+    char* pointer = nullptr;
+    PrepareSendBuffers(SndTags, pointer, send_data, send_size, send_rank, send_reqs, send_cctc, ncomp);
+    return TheFaArenaPointer(pointer);
+}
+
+template <class FAB>
+void
+FabArray<FAB>::AsyncPrepareSendBuffers (const MapOfCopyComTagContainers&     SndTags,
+                                   char*&                               the_send_data,
+                                   Vector<char*>&                       send_data,
+                                   Vector<std::size_t>&                 send_size,
+                                   Vector<int>&                         send_rank,
+                                   Vector<MPI_Request>&                 send_reqs,
+                                   Vector<const CopyComTagsContainer*>& send_cctc,
+                                   int                                  ncomp) const
+{
+    send_size.clear();
+    send_rank.clear();
+    send_cctc.clear();
+
+    const int N_snds = SndTags.size();
+    if (N_snds == 0) return;
+
+    const int send_data_size = send_data.size();
+
+    send_size.reserve(N_snds);
+    send_rank.reserve(N_snds);
+    send_cctc.reserve(N_snds);
+
+    if (send_data_size == 0){
+        send_data.reserve(N_snds);
+        send_reqs.reserve(N_snds);
+        async_fbd->send_count.reserve(N_snds);
+        async_fbd->send_stat.reserve(N_snds);
+        async_fbd->send_finalMsg.reserve(N_snds);
+	async_fbd->send_flags.reserve(N_snds);
+    }
+
+    Vector<std::size_t> offset; offset.reserve(N_snds);
+    std::size_t total_volume = 0;
+    for (auto const& kv : SndTags)
+    {
+        Vector<int> iss;
+        auto const& cctc = kv.second;
+
+        std::size_t nbytes = 0;
+        for (auto const& cct : kv.second)
+        {
+            nbytes += (*this)[cct.srcIndex].nBytes(cct.sbox,ncomp);
+        }
+
+        std::size_t acd = ParallelDescriptor::alignof_comm_data(nbytes);
+        nbytes = amrex::aligned_size(acd, nbytes); // so that bytes are aligned
+
+        // Also need to align the offset properly
+        total_volume = amrex::aligned_size(std::max(alignof(typename FAB::value_type),
+                                                    acd),
+                                           total_volume);
+
+        offset.push_back(total_volume);
+        total_volume += nbytes;
+
+        send_size.push_back(nbytes);
+        send_rank.push_back(kv.first);
+        send_cctc.push_back(&cctc);
+
+        if (send_data_size == 0){
+            send_data.push_back(nullptr);
+            send_reqs.push_back(MPI_REQUEST_NULL);
+            async_fbd->send_count.push_back(0);
+            async_fbd->send_finalMsg.push_back(0);
+	    async_fbd->send_flags.push_back(0);
+        }
+    }
+
+    int nsend = send_data.size(); 
+    async_fbd->send_stat.resize(nsend);
+
+    if (send_data_size == 0)
+    {
+       if (total_volume > 0)
+       {
+           the_send_data = static_cast<char*>(amrex::The_FA_Arena()->alloc(total_volume));
+           for (int i = 0, N = send_size.size(); i < N; ++i) {
+               send_data[i] = the_send_data + offset[i];
+           }
+       } else {
+           the_send_data = nullptr;
+       }
+    }
+}
+
+
+template <class FAB>
+void
+FabArray<FAB>::AsyncPostSnds (Vector<char*> const&       send_data,
+                              Vector<std::size_t> const& send_size,
+                              Vector<int> const&         send_rank,
+                              Vector<MPI_Request>&       send_reqs,
+                              int                        SeqNum) const
+{
+    MPI_Comm comm = ParallelContext::CommunicatorSub();
+
+    const int N_snds = send_reqs.size();
+    for (int j = 0; j < N_snds; ++j)
+    {
+        if (async_fbd->send_finalMsg[j] <= 1)
+        {
+            async_fbd->send_flags[j] = 0;
+            ParallelDescriptor::Test(send_reqs[j], async_fbd->send_flags[j], async_fbd->send_stat[j]);
+            if (async_fbd->send_flags[j] > 0) {
+                int async_send_tag; 
+                if (async_fbd->send_finalMsg[j] == 1)
+                {
+                   async_send_tag = SeqNum+1;
+                   async_fbd->send_finalMsg[j] = 2;
+                }
+                else 
+                {
+                   async_send_tag = SeqNum;
+                }
+                const int rank = ParallelContext::global_to_local_rank(send_rank[j]);
+                send_reqs[j] = ParallelDescriptor::Asend
+                    (send_data[j], send_size[j], rank, async_send_tag, comm).req();
+                async_fbd->send_count[j]++;
+            }
+        }
+    }
+}
+
+template <class FAB>
+TheFaArenaPointer FabArray<FAB>::AsyncPostRcvs (const MapOfCopyComTagContainers&       RcvTags,
+                   Vector<char*>&                         recv_data,
+                   Vector<std::size_t>&                   recv_size,
+                   Vector<int>&                           recv_from,
+                   Vector<MPI_Request>&                   recv_reqs,
+                   int                                    ncomp,
+                   int                                    SeqNum) const
+{
+    char* pointer = nullptr;
+    AsyncPostRcvs(RcvTags, pointer, recv_data, recv_size, recv_from, recv_reqs, ncomp, SeqNum);
+    return TheFaArenaPointer(pointer);
+}
+
+template <class FAB>
+void
+FabArray<FAB>::AsyncPostRcvs (const MapOfCopyComTagContainers&  RcvTags,
+                         char*&                            the_recv_data,
+                         Vector<char*>&                    recv_data,
+                         Vector<std::size_t>&              recv_size,
+                         Vector<int>&                      recv_from,
+                         Vector<MPI_Request>&              recv_reqs,
+                         int                               ncomp,
+                         int                               SeqNum) const
+{
+    recv_size.clear();
+    recv_from.clear();
+
+    Vector<std::size_t> offset;
+    std::size_t TotalRcvsVolume = 0;
+    for (const auto& kv : RcvTags) // loop over senders
+    {
+        std::size_t nbytes = 0;
+        for (auto const& cct : kv.second)
+        {
+            nbytes += (*this)[cct.dstIndex].nBytes(cct.dbox,ncomp);
+        }
+
+        std::size_t acd = ParallelDescriptor::alignof_comm_data(nbytes);
+        nbytes = amrex::aligned_size(acd, nbytes);  // so that nbytes are aligned
+
+        // Also need to align the offset properly
+        TotalRcvsVolume = amrex::aligned_size(std::max(alignof(typename FAB::value_type),acd),
+                                              TotalRcvsVolume);
+
+        offset.push_back(TotalRcvsVolume);
+        TotalRcvsVolume += nbytes;
+
+        recv_size.push_back(nbytes);
+        recv_from.push_back(kv.first);
+    }
+
+    if (TotalRcvsVolume == 0)
+    {
+        the_recv_data = nullptr;
+    }
+    else
+    {
+        int nrecv = recv_data.size();
+        MPI_Comm comm = ParallelContext::CommunicatorSub();
+
+        if (nrecv == 0){
+            for (const auto& kv : RcvTags) // loop over senders
+            {
+                recv_data.push_back(nullptr);
+                recv_reqs.push_back(MPI_REQUEST_NULL);
+                async_fbd->recv_data_inFlight.push_back(nullptr);
+                async_fbd->recv_data_finalMsg.push_back(nullptr);
+                async_fbd->recv_flags.push_back(0);
+                async_fbd->recvd_finalMsg.push_back(0);
+                async_fbd->recv_count.push_back(-1);
+                async_fbd->recv_reqs_finalMsg.push_back(MPI_REQUEST_NULL);
+            }
+
+            nrecv = recv_data.size();
+            async_fbd->recv_stat.resize(nrecv);
+	    async_fbd->recv_stat_finalMsg.resize(nrecv);
+
+            the_recv_data = static_cast<char*>(amrex::The_FA_Arena()->alloc(TotalRcvsVolume));
+            for (int i = 0; i < nrecv; ++i)
+            {
+                the_recv_data[i] = 0.0;
+            }
+
+            for (int i = 0; i < nrecv; ++i)
+            {
+		async_fbd->recv_data[i] = the_recv_data + offset[i];
+                async_fbd->recv_data_inFlight[i] = the_recv_data + offset[i];
+                async_fbd->recv_data_finalMsg[i] = the_recv_data + offset[i];
+            }
+        }
+
+
+        for (int i = 0; i < nrecv; ++i)
+        {
+            if (async_fbd->recvd_finalMsg[i] == 0)
+	    {
+	        const int rank = ParallelContext::global_to_local_rank(recv_from[i]);
+                if (async_fbd->recv_count[i] == -1){
+                   recv_reqs[i] = ParallelDescriptor::Arecv
+                       (async_fbd->recv_data_inFlight[i], recv_size[i], rank, SeqNum, comm).req();
+                   async_fbd->recv_reqs_finalMsg[i] = ParallelDescriptor::Arecv
+                       (async_fbd->recv_data_finalMsg[i], recv_size[i], rank, SeqNum+1, comm).req();
+                   async_fbd->recv_count[i] = 0;
+                }
+	        while (1)
+	        {
+	            async_fbd->recv_flags[i] = 0;
+                    ParallelDescriptor::Test(recv_reqs[i], async_fbd->recv_flags[i], async_fbd->recv_stat[i]);
+                    if (async_fbd->recv_flags[i] > 0)
+                    {
+                        recv_data[i] = async_fbd->recv_data_inFlight[i];
+                        recv_reqs[i] = ParallelDescriptor::Arecv
+                            (async_fbd->recv_data_inFlight[i], recv_size[i], rank, SeqNum, comm).req();
+                        async_fbd->recv_count[i]++;
+                    }
+	            else {
+                        break;
+                    }
+	        }
+
+                async_fbd->recv_flags[i] = 0;
+                ParallelDescriptor::Test(async_fbd->recv_reqs_finalMsg[i], async_fbd->recv_flags[i], async_fbd->recv_stat_finalMsg[i]);
+                if (async_fbd->recv_flags[i] > 0)
+                {
+                    recv_data[i] = async_fbd->recv_data_finalMsg[i];
+                    async_fbd->recvd_finalMsg[i] = 1;
+                    async_fbd->recv_count[i]++;
+                    MPI_Cancel(&(recv_reqs[i]));
+                }
+            }
+        }
+    }
+}
+
+template <class FAB>
+int
+FabArray<FAB>::AsyncCheckSendConverge (int extern_converge,
+                                       int num_msgs_per_neighb)
+{
+    int all_final_sends_posted = 1;
+    int nsend = async_fbd->send_data.size();
+    for (int i = 0; i < nsend; ++i)
+    {
+        if (async_fbd->send_finalMsg[i] == 0)
+        {
+            all_final_sends_posted = 0;
+            if (async_fbd->send_count[i] >= num_msgs_per_neighb || extern_converge > 0)
+            {
+                async_fbd->send_finalMsg[i] = 1;
+            }
+        }
+        else {
+            if (async_fbd->send_finalMsg[i] == 1)
+            {
+                all_final_sends_posted = 0;
+            }
+        }
+    }
+    return all_final_sends_posted;
+}
+
+template <class FAB>
+int
+FabArray<FAB>::AsyncCheckRecvConverge ()
+{
+    int nrecv = async_fbd->recv_data.size();
+    for (int i = 0; i < nrecv; ++i)
+    {
+       if (async_fbd->recvd_finalMsg[i] == 0)
+       {
+           return 0;
+       }
+    }
+    return 1;
+}
+#endif
+
+template <class FAB>
+int
+FabArray<FAB>::AsyncCheckConverge (int extern_converge,
+                                   int num_msgs_per_neighb)
+{
+    int converge_flag = 1;
+#ifdef BL_USE_MPI
+    converge_flag = AsyncCheckSendConverge(extern_converge, num_msgs_per_neighb);
+#endif
+    return converge_flag;
+}
+
+template <class FAB>
+void
+FabArray<FAB>::AsyncClearMem ()
+{
+   async_fbd->recv_flags.clear();
+   async_fbd->send_flags.clear();
+
+   async_fbd->recv_count.clear();
+   async_fbd->send_count.clear();
+
+   async_fbd->recv_data.clear();
+   async_fbd->send_data.clear();
+
+   async_fbd->recv_reqs.clear();
+   async_fbd->send_reqs.clear();
+
+   async_fbd->recv_stat.clear();
+   async_fbd->send_stat.clear();
+
+   async_fbd->recvd_finalMsg.clear();
+   async_fbd->send_finalMsg.clear();
+
+   async_fbd->recv_size.clear();
+   async_fbd->recv_from.clear();
+   async_fbd->recv_data_inFlight.clear();
+   async_fbd->recv_data_finalMsg.clear();
+   async_fbd->recv_stat_finalMsg.clear();
+   async_fbd->recv_reqs_finalMsg.clear();
+
+   if (async_fbd->the_recv_data)
+   {
+       amrex::The_FA_Arena()->free(async_fbd->the_recv_data);
+       async_fbd->the_recv_data = nullptr;
+   }
+   if (async_fbd->the_send_data)
+   {
+       amrex::The_FA_Arena()->free(async_fbd->the_send_data);
+       async_fbd->the_send_data = nullptr;
+   }
+}
+
+template <class FAB>
+void
+FabArray<FAB>::AsyncSetup ()
+{
+#ifdef BL_USE_MPI
+   async_fbd = new FBData<FAB>();
+   AsyncClearMem();
+#endif
+}
+
+template <class FAB>
+void
+FabArray<FAB>::AsyncCleanup (int scomp, int ncomp, const IntVect& nghost,
+                             const Periodicity& period, bool cross,
+                             bool enforce_periodicity_only)
+{
+#ifdef BL_USE_MPI
+   int SeqNum = 10;//ParallelDescriptor::SeqNum();
+   const FB& TheFB = getFB(nghost, period, cross, enforce_periodicity_only);
+   const int N_rcvs = async_fbd->recv_data.size();
+   const int N_snds = async_fbd->send_data.size();
+   MPI_Comm comm = ParallelContext::CommunicatorSub();
+   int all_final_sent_msgs_complete;
+   while(1) {
+       if (N_rcvs > 0) {
+           AsyncPostRcvs(*TheFB.m_RcvTags, async_fbd->the_recv_data,
+                         async_fbd->recv_data, async_fbd->recv_size, async_fbd->recv_from, async_fbd->recv_reqs,
+                         ncomp, SeqNum);
+       }
+       all_final_sent_msgs_complete = 1;
+       for (int j = 0; j < N_snds; ++j)
+       {
+           if (async_fbd->send_finalMsg[j] == 2)
+           {
+               async_fbd->send_flags[j] = 0;
+               ParallelDescriptor::Test(async_fbd->send_reqs[j], async_fbd->send_flags[j], async_fbd->send_stat[j]);
+               if (async_fbd->send_flags[j] > 0)
+	       {
+                   async_fbd->send_finalMsg[j] = 3;
+               }
+	       else
+               {
+                  all_final_sent_msgs_complete = 0;
+               }
+           }
+       }
+
+       if ((AsyncCheckRecvConverge()) && (all_final_sent_msgs_complete))
+       {
+           break;
+       }
+   }
+
+   printf("%d %d %d %d\n", N_snds, N_rcvs, 
+		   *std::min_element(async_fbd->recv_count.begin(), async_fbd->recv_count.end()),
+		   *std::min_element(async_fbd->send_count.begin(), async_fbd->send_count.end()));
+   //for (int j = 0; j < N_rcvs; ++j) printf("%d %d\n", async_fbd->recv_count[j], async_fbd->send_count[j]);
+   //for (int j = 0; j < N_snds; ++j) printf("%d\n", async_fbd->send_count[j]);
+
+   AsyncClearMem();
+   delete async_fbd;
+#endif
+}
+
+
+
+
+/* end JORDI section */
+
+//#endif

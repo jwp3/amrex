@@ -32,7 +32,10 @@ public:
                      Real a_tol_rel, Real a_tol_abs, const char* checkpoint_file = nullptr);
     void asyncOneIter (int iter);
     void prepareForAsyncSolve (const Vector<MultiFab*>& a_sol, const Vector<MultiFab const*>& a_rhs);
-    void syncMGAddVcycle (int amrlev, int mglev_top);
+    void mgAddVcycle (int amrlev, int mglev_top);
+    void asyncSmoothSweep (MLLinOp *async_linop,
+                           int amrlev, int mglev, MultiFab& sol, const MultiFab& rhs,
+                           bool skip_fillboundary);
 
     Vector<std::unique_ptr<MultiFab>> cor_smooth;
     Vector<std::unique_ptr<MultiFab>> Acor;

@@ -111,6 +111,11 @@ Frame::get_inc_mpi_tag ()
     int cur_tag = m_mpi_tag;
     m_mpi_tag = (m_mpi_tag < ParallelDescriptor::MaxTag()) ?
         m_mpi_tag + 1 : ParallelDescriptor::MinTag();
+    /* begin JORDI section */
+    if (m_mpi_tag == 10 || m_mpi_tag == 11){
+       m_mpi_tag = 12;
+    }
+    /* end JORDI section */
     return cur_tag;
 }
 
