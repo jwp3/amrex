@@ -106,7 +106,6 @@ MLAsyncMG::asyncSolve (const Vector<MultiFab*>& a_sol, const Vector<MultiFab con
 
             converged = false;
 
-            // Test convergence on the fine amr level
             computeResidual(finest_amr_lev);
 
             if (is_nsolve) continue;
@@ -307,47 +306,78 @@ MLAsyncMG::mgAddVcycle (int amrlev, int mglev_top)
 
     MultiFab& cor_top = *cor[amrlev][mglev_top];
     MultiFab& res_top = res[amrlev][mglev_top];
+    MLCellLinOp *cell_linop = dynamic_cast<MLCellLinOp *>(&linop);
 
-    MultiFab& cor_smooth_alev = *cor_smooth[amrlev];
-    cor_smooth_alev.AsyncSetup();
-    cor_smooth_alev.setVal(0.0);
-    int num_async_smoother_sweeps = 100;
-    int sweep = 0;
-    while (1)
-    {
-        //linop.smooth(amrlev, mglev_top, cor_top, res_top, true);
-        asyncSmoothSweep(&linop, amrlev, mglev_top, cor_smooth_alev, res_top, true); 
-	sweep++;
-	int converge_flag = cor_smooth_alev.AsyncCheckConverge(0, num_async_smoother_sweeps);
-        if (converge_flag == 1){
-           break;
-        }
-    }
-
-    MLCellLinOp *async_cell_linop = dynamic_cast<MLCellLinOp *>(&linop);
-    const int cross = async_cell_linop->isCrossStencil();
-    const Geometry& m_geom = async_cell_linop->Geom(amrlev, mglev_top);
-    cor_smooth_alev.AsyncCleanup(0, ncomp, cor_smooth_alev.nGrowVect(), m_geom.periodicity(), cross);
-
-    MultiFab::Add(cor_top, cor_smooth_alev, 0, 0, ncomp, nghost);
-
-    return;
+    cor_top.setVal(0.0);
 
     if (linop.NMGLevels(amrlev) < 1){
        return;
     }
-    else if (amrlev != 0 || linop.NMGLevels(amrlev) == 1){
-       cor_top.setVal(0.0);
-       int num_top_smooth_sweeps = 1;
+    else if (amrlev != 0){
+       int num_smooth_sweeps = 1;
        skip_fillboundary = true;
-       for (int i = 0; i < num_top_smooth_sweeps; ++i) {
+       for (int i = 0; i < num_smooth_sweeps; ++i) {
            linop.smooth(amrlev, mglev_top, cor_top, res_top, skip_fillboundary);
            skip_fillboundary = false;
        }
     }
     else {
        MultiFab& cor_smooth_alev = *cor_smooth[amrlev];
-       int num_top_smooth_sweeps = 100;
+
+       cor_smooth_alev.setVal(0.0);
+       int num_top_async_smooth_sweeps = 100;
+
+       skip_fillboundary = true;
+       for (int i = 0; i < num_top_async_smooth_sweeps; ++i)
+       {
+	   for (int redblack = 0; redblack < 2; ++redblack)
+           {
+               bool comm_complete = false;
+               while (!comm_complete)
+               {
+                   cell_linop->smooth(amrlev, mglev_top, cor_smooth_alev, res_top, comm_complete, redblack, skip_fillboundary);
+               }
+	       skip_fillboundary = false;
+           }
+       }
+
+       //skip_fillboundary = true;
+       //for (int i = 0; i < num_top_async_smooth_sweeps; ++i) {
+       //    linop.smooth(amrlev, mglev_top, cor_smooth_alev, res_top, skip_fillboundary);
+       //    skip_fillboundary = false;
+       //}
+
+       MultiFab::Add(cor_top, cor_smooth_alev, 0, 0, ncomp, nghost);
+       return;
+
+       int sweep = 0;
+       int local_converge = 0;
+       cor_smooth_alev.AsyncSetup();
+       while (1)
+       {
+           //linop.smooth(amrlev, mglev_top, cor_top, res_top, true);
+           asyncSmoothSweep(&linop, amrlev, mglev_top, cor_smooth_alev, res_top, true);
+           sweep++;
+           if (sweep >= num_top_async_smooth_sweeps)
+	   {
+               local_converge = 1;
+           }
+           int converge_flag = cor_smooth_alev.AsyncCheckConverge(local_converge, num_top_async_smooth_sweeps);
+           if (converge_flag == 1){
+              break;
+           }
+       }
+       const int cross = cell_linop->isCrossStencil();
+       const Geometry& m_geom = cell_linop->Geom(amrlev, mglev_top);
+       cor_smooth_alev.AsyncCleanup(0, ncomp, cor_smooth_alev.nGrowVect(), m_geom.periodicity(), cross);
+
+       MultiFab::Add(cor_top, cor_smooth_alev, 0, 0, ncomp, nghost);
+       MPI_Comm comm = ParallelContext::CommunicatorSub();
+       int rank = ParallelDescriptor::MyProc(comm);
+     //  printf("%d %d\n", rank, sweep);
+     //  fflush(stdout);
+
+       return;
 
        if (0){
           /* Restrict finest residual to all coarse grids */
@@ -429,7 +459,7 @@ MLAsyncMG::mgAddVcycle (int amrlev, int mglev_top)
        //if (0) { 
           cor_smooth_alev.setVal(0.0);
           skip_fillboundary = true;
-          for (int i = 0; i < num_top_smooth_sweeps; ++i) {
+          for (int i = 0; i < num_top_async_smooth_sweeps; ++i) {
               linop.smooth(amrlev, mglev_top, cor_smooth_alev, res_top, skip_fillboundary);
               skip_fillboundary = false;
           }
@@ -449,7 +479,7 @@ MLAsyncMG::mgAddVcycle (int amrlev, int mglev_top)
 
        //cor_smooth_alev.setVal(0.0);
        //skip_fillboundary = true;
-       for (int i = 0; i < num_top_smooth_sweeps; ++i) {
+       for (int i = 0; i < num_top_async_smooth_sweeps; ++i) {
            linop.smooth(amrlev, mglev_top, cor_smooth_alev, res_top, skip_fillboundary);
            //skip_fillboundary = false;
        }
@@ -471,9 +501,9 @@ MLAsyncMG::asyncSmoothSweep (MLLinOp *async_linop,
     const int cross = async_cell_linop->isCrossStencil();
     const Geometry& m_geom = async_cell_linop->Geom(amrlev, mglev);
 
+    //sol.AsyncFillBoundary(0, ncomp, sol.nGrowVect(), m_geom.periodicity(), cross);
     for (int redblack = 0; redblack < 2; ++redblack)
     {
-        sol.AsyncFillBoundary(0, ncomp, sol.nGrowVect(), m_geom.periodicity(), cross);
         //sol.FillBoundary(0, ncomp, m_geom.periodicity(), cross);
 
         async_cell_linop->applyBC(amrlev, mglev, sol, MLLinOp::BCMode::Homogeneous, MLLinOp::StateMode::Solution,
@@ -481,8 +511,9 @@ MLAsyncMG::asyncSmoothSweep (MLLinOp *async_linop,
 //#ifdef AMREX_SOFT_PERF_COUNTERS
 //        perf_counters.smooth(sol);
 //#endif
-       async_cell_linop->Fsmooth(amrlev, mglev, sol, rhs, redblack);
+        async_cell_linop->Fsmooth(amrlev, mglev, sol, rhs, redblack);
     }
+    sol.AsyncFillBoundary(0, ncomp, sol.nGrowVect(), m_geom.periodicity(), cross);
 }
 
 }

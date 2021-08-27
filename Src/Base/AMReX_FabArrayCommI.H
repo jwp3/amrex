@@ -68,7 +68,11 @@ FabArray<FAB>::FBEP_nowait (int scomp, int ncomp, const IntVect& nghost,
         return;
     }
 
-    fbd = std::make_unique<FBData<FAB>>();
+    /* begin JORDI section */
+    fbd = new FBData<FAB>();
+    /* end JORDI section */
+    //fbd = std::make_unique<FBData<FAB>>();
+
     fbd->fb    = &TheFB;
     fbd->scomp = scomp;
     fbd->ncomp = ncomp;
@@ -127,7 +131,9 @@ FabArray<FAB>::FBEP_nowait (int scomp, int ncomp, const IntVect& nghost,
         PostSnds(send_data, send_size, send_rank, send_reqs, SeqNum);
     }
 
-    FillBoundary_test();
+    /* begin JORDI section */
+    //FillBoundary_test();
+    /* end JORDI section */
 
     //
     // Do the local work.  Hope for a bit of communication/computation overlap.
@@ -153,7 +159,9 @@ FabArray<FAB>::FBEP_nowait (int scomp, int ncomp, const IntVect& nghost,
             FB_local_copy_cpu(TheFB, scomp, ncomp);
         }
 
-        FillBoundary_test();
+	/* begin JORDI section */
+        //FillBoundary_test();
+	/* end JORDI section */
     }
 
 #endif /*BL_USE_MPI*/
@@ -237,8 +245,12 @@ FabArray<FAB>::FillBoundary_finish ()
         fbd->the_send_data = nullptr;
     }
 
-    fbd.reset();
 
+    /* begin JORDI section */
+    delete fbd;
+    fbd = nullptr;
+    //fbd.reset();
+    /* end JORDI section */
 #endif
 }
 
@@ -1172,7 +1184,118 @@ FillBoundary (Vector<MF*> const& mf, const Periodicity& a_period = Periodicity::
  *
  *           begin JORDI section
  *
- * *******************************************/
+ *********************************************/
+
+
+template <class FAB>
+template <class F, typename std::enable_if<IsBaseFab<F>::value,int>::type Z>
+void
+FabArray<FAB>::FillBoundary_finish (bool& comm_complete)
+{
+#ifdef AMREX_USE_MPI
+
+    BL_PROFILE("FillBoundary_finish()");
+
+    if (!fbd) { n_filled = IntVect::TheZeroVector(); return; }
+
+    const FB* TheFB = fbd->fb;
+    const int N_rcvs = TheFB->m_RcvTags->size();
+    if (N_rcvs > 0 && !(fbd->recvs_complete))
+    {
+        int actual_n_rcvs = N_rcvs - std::count(fbd->recv_data.begin(), fbd->recv_data.end(), nullptr);
+
+        if (actual_n_rcvs > 0) {
+            //ParallelDescriptor::Waitall(fbd->recv_reqs, fbd->recv_stat);
+            int test_recv_flag = 0;
+            ParallelDescriptor::Test(fbd->recv_reqs, test_recv_flag, fbd->recv_stat);
+	    if (test_recv_flag)
+            {
+                fbd->recvs_complete = true;
+            }
+	    else
+            {
+                fbd->recvs_complete = false;
+	        return;
+            }
+#ifdef AMREX_DEBUG
+            if (!CheckRcvStats(fbd->recv_stat, fbd->recv_size, fbd->tag))
+            {
+                amrex::Abort("FillBoundary_finish failed with wrong message size");
+            }
+#endif
+        }
+
+	Vector<const CopyComTagsContainer*> recv_cctc(N_rcvs,nullptr);
+        for (int k = 0; k < N_rcvs; k++)
+        {
+            if (fbd->recv_size[k] > 0)
+            {
+                auto const& cctc = TheFB->m_RcvTags->at(fbd->recv_from[k]);
+                recv_cctc[k] = &cctc;
+            }
+        }
+
+        bool is_thread_safe = TheFB->m_threadsafe_rcv;
+
+#ifdef AMREX_USE_GPU
+        if (Gpu::inLaunchRegion())
+        {
+#if ( defined(__CUDACC__) && (__CUDACC_VER_MAJOR__ >= 10) )
+            if (Gpu::inGraphRegion())
+            {
+                FB_unpack_recv_buffer_cuda_graph(*TheFB, fbd->scomp, fbd->ncomp,
+                                                 fbd->recv_data, fbd->recv_size,
+                                                 recv_cctc, is_thread_safe);
+            }
+            else
+#endif
+            {
+                unpack_recv_buffer_gpu(*this, fbd->scomp, fbd->ncomp, fbd->recv_data, fbd->recv_size,
+                                       recv_cctc, FabArrayBase::COPY, is_thread_safe);
+            }
+        }
+        else
+#endif
+        {
+            unpack_recv_buffer_cpu(*this, fbd->scomp, fbd->ncomp, fbd->recv_data, fbd->recv_size,
+                                   recv_cctc, FabArrayBase::COPY, is_thread_safe);
+        }
+
+        if (fbd->the_recv_data)
+        {
+            amrex::The_FA_Arena()->free(fbd->the_recv_data);
+            fbd->the_recv_data = nullptr;
+        }
+    }
+
+    const int N_snds = TheFB->m_SndTags->size();
+    if (N_snds > 0) {
+        Vector<MPI_Status> stats(fbd->send_reqs.size());
+        //ParallelDescriptor::Waitall(fbd->send_reqs, stats);
+	int test_send_flag = 0;
+        ParallelDescriptor::Test(fbd->send_reqs, test_send_flag, fbd->send_stat);
+        if (test_send_flag)
+        {
+            fbd->sends_complete = true;
+        }
+        else
+        {
+            fbd->sends_complete = false;
+            return;
+        }
+        amrex::The_FA_Arena()->free(fbd->the_send_data);
+        fbd->the_send_data = nullptr;
+    }
+
+    /* begin JORDI section */
+    comm_complete = true;
+    delete fbd;
+    fbd = nullptr;
+    //fbd.reset();
+    /* end JORDI section */
+
+#endif
+}
 
 
 template <class FAB>
@@ -1508,7 +1631,7 @@ FabArray<FAB>::AsyncPostSnds (Vector<char*> const&       send_data,
 {
     MPI_Comm comm = ParallelContext::CommunicatorSub();
 
-    const int N_snds = send_reqs.size();
+    const int N_snds = send_data.size();
     for (int j = 0; j < N_snds; ++j)
     {
         if (async_fbd->send_finalMsg[j] <= 1)
@@ -1624,6 +1747,13 @@ FabArray<FAB>::AsyncPostRcvs (const MapOfCopyComTagContainers&  RcvTags,
 		async_fbd->recv_data[i] = the_recv_data + offset[i];
                 async_fbd->recv_data_inFlight[i] = the_recv_data + offset[i];
                 async_fbd->recv_data_finalMsg[i] = the_recv_data + offset[i];
+
+		for (int j = 0; j < recv_size[i]; ++j)
+                {
+                    recv_data[i][j] = 0.0;
+		    async_fbd->recv_data_inFlight[i][j] = 0.0;
+		    async_fbd->recv_data_finalMsg[i][j] = 0.0;
+                }
             }
         }
 
@@ -1640,30 +1770,65 @@ FabArray<FAB>::AsyncPostRcvs (const MapOfCopyComTagContainers&  RcvTags,
                        (async_fbd->recv_data_finalMsg[i], recv_size[i], rank, SeqNum+1, comm).req();
                    async_fbd->recv_count[i] = 0;
                 }
-	        while (1)
-	        {
-	            async_fbd->recv_flags[i] = 0;
-                    ParallelDescriptor::Test(recv_reqs[i], async_fbd->recv_flags[i], async_fbd->recv_stat[i]);
-                    if (async_fbd->recv_flags[i] > 0)
-                    {
-                        recv_data[i] = async_fbd->recv_data_inFlight[i];
-                        recv_reqs[i] = ParallelDescriptor::Arecv
-                            (async_fbd->recv_data_inFlight[i], recv_size[i], rank, SeqNum, comm).req();
-                        async_fbd->recv_count[i]++;
-                    }
-	            else {
-                        break;
-                    }
-	        }
 
-                async_fbd->recv_flags[i] = 0;
-                ParallelDescriptor::Test(async_fbd->recv_reqs_finalMsg[i], async_fbd->recv_flags[i], async_fbd->recv_stat_finalMsg[i]);
+	        //while (1)
+	        //{
+	        //    async_fbd->recv_flags[i] = 0;
+                //    ParallelDescriptor::Test(recv_reqs[i], async_fbd->recv_flags[i], async_fbd->recv_stat[i]);
+                //    if (async_fbd->recv_flags[i] > 0)
+                //    {
+		//	for (int j = 0; j < recv_size[i]; ++j)
+                //        {
+                //            recv_data[i][j] = async_fbd->recv_data_inFlight[i][j];
+		//	}
+                //        recv_reqs[i] = ParallelDescriptor::Arecv
+                //            (async_fbd->recv_data_inFlight[i], recv_size[i], rank, SeqNum, comm).req();
+                //        async_fbd->recv_count[i]++;
+                //    }
+	        //    else {
+                //        break;
+                //    }
+	        //}
+		//
+		//async_fbd->recv_flags[i] = 0;
+                //ParallelDescriptor::Test(async_fbd->recv_reqs_finalMsg[i], async_fbd->recv_flags[i], async_fbd->recv_stat_finalMsg[i]);
+                //if (async_fbd->recv_flags[i] > 0)
+                //{
+                //    for (int j = 0; j < recv_size[i]; ++j)
+                //    {
+                //        recv_data[i][j] = async_fbd->recv_data_finalMsg[i][j];
+                //    }
+                //    async_fbd->recvd_finalMsg[i] = 1;
+                //    async_fbd->recv_count[i]++;
+                //    MPI_Cancel(&(recv_reqs[i]));
+                //}
+
+		async_fbd->recv_flags[i] = 0;
+                ParallelDescriptor::Test(recv_reqs[i], async_fbd->recv_flags[i], async_fbd->recv_stat[i]);
                 if (async_fbd->recv_flags[i] > 0)
                 {
-                    recv_data[i] = async_fbd->recv_data_finalMsg[i];
-                    async_fbd->recvd_finalMsg[i] = 1;
+                    for (int j = 0; j < recv_size[i]; ++j)
+                    {
+                        recv_data[i][j] = async_fbd->recv_data_inFlight[i][j];
+                    }
+                    recv_reqs[i] = ParallelDescriptor::Arecv
+                        (async_fbd->recv_data_inFlight[i], recv_size[i], rank, SeqNum, comm).req();
                     async_fbd->recv_count[i]++;
-                    MPI_Cancel(&(recv_reqs[i]));
+                }
+		else 
+		{
+                    async_fbd->recv_flags[i] = 0;
+                    ParallelDescriptor::Test(async_fbd->recv_reqs_finalMsg[i], async_fbd->recv_flags[i], async_fbd->recv_stat_finalMsg[i]);
+                    if (async_fbd->recv_flags[i] > 0)
+                    {
+                        for (int j = 0; j < recv_size[i]; ++j)
+                        {
+                            recv_data[i][j] = async_fbd->recv_data_finalMsg[i][j];
+                        }
+                        async_fbd->recvd_finalMsg[i] = 1;
+                        async_fbd->recv_count[i]++;
+                        MPI_Cancel(&(recv_reqs[i]));
+                    }
                 }
             }
         }
@@ -1672,8 +1837,7 @@ FabArray<FAB>::AsyncPostRcvs (const MapOfCopyComTagContainers&  RcvTags,
 
 template <class FAB>
 int
-FabArray<FAB>::AsyncCheckSendConverge (int extern_converge,
-                                       int num_msgs_per_neighb)
+FabArray<FAB>::AsyncCheckSendConverge (int num_msgs_per_neighb)
 {
     int all_final_sends_posted = 1;
     int nsend = async_fbd->send_data.size();
@@ -1682,12 +1846,13 @@ FabArray<FAB>::AsyncCheckSendConverge (int extern_converge,
         if (async_fbd->send_finalMsg[i] == 0)
         {
             all_final_sends_posted = 0;
-            if (async_fbd->send_count[i] >= num_msgs_per_neighb || extern_converge > 0)
+            if (async_fbd->send_count[i] >= num_msgs_per_neighb)
             {
                 async_fbd->send_finalMsg[i] = 1;
             }
         }
-        else {
+        else
+	{
             if (async_fbd->send_finalMsg[i] == 1)
             {
                 all_final_sends_posted = 0;
@@ -1720,8 +1885,57 @@ FabArray<FAB>::AsyncCheckConverge (int extern_converge,
 {
     int converge_flag = 1;
 #ifdef BL_USE_MPI
-    converge_flag = AsyncCheckSendConverge(extern_converge, num_msgs_per_neighb);
+    int nsend = async_fbd->send_data.size();
+    int nrecv = async_fbd->recv_data.size();
+    
+    if (extern_converge == 0){
+        converge_flag = 0;
+    }
+    else
+    {
+        int recvd_enough = 1;
+        for (int i = 0; i < nrecv; ++i)
+        {
+            if (async_fbd->recv_count[i] < num_msgs_per_neighb)
+            {
+                recvd_enough = 0;
+		break;
+            }
+        }
+
+	if (recvd_enough == 1)
+        {
+            int all_final_sends_posted = 1;
+            for (int i = 0; i < nsend; ++i)
+            {
+                if (async_fbd->send_finalMsg[i] == 0)
+                {
+                    all_final_sends_posted = 0;
+                    if (async_fbd->send_count[i] >= num_msgs_per_neighb)
+                    {
+                        async_fbd->send_finalMsg[i] = 1;
+                    }
+                }
+                else
+                {
+                    if (async_fbd->send_finalMsg[i] == 1)
+                    {
+                        all_final_sends_posted = 0;
+                    }
+                }
+            }
+	    if (all_final_sends_posted == 0)
+            {
+                converge_flag = 0;
+            }
+        }
+	else
+	{
+            converge_flag = 0;
+	}
+    }
 #endif
+
     return converge_flag;
 }
 
@@ -1788,40 +2002,44 @@ FabArray<FAB>::AsyncCleanup (int scomp, int ncomp, const IntVect& nghost,
    const int N_rcvs = async_fbd->recv_data.size();
    const int N_snds = async_fbd->send_data.size();
    MPI_Comm comm = ParallelContext::CommunicatorSub();
-   int all_final_sent_msgs_complete;
-   while(1) {
-       if (N_rcvs > 0) {
+   //int all_final_sent_msgs_complete;
+   if (N_rcvs > 0) {
+       while(1) {
            AsyncPostRcvs(*TheFB.m_RcvTags, async_fbd->the_recv_data,
                          async_fbd->recv_data, async_fbd->recv_size, async_fbd->recv_from, async_fbd->recv_reqs,
                          ncomp, SeqNum);
-       }
-       all_final_sent_msgs_complete = 1;
-       for (int j = 0; j < N_snds; ++j)
-       {
-           if (async_fbd->send_finalMsg[j] == 2)
-           {
-               async_fbd->send_flags[j] = 0;
-               ParallelDescriptor::Test(async_fbd->send_reqs[j], async_fbd->send_flags[j], async_fbd->send_stat[j]);
-               if (async_fbd->send_flags[j] > 0)
-	       {
-                   async_fbd->send_finalMsg[j] = 3;
-               }
-	       else
-               {
-                  all_final_sent_msgs_complete = 0;
-               }
-           }
-       }
+           //all_final_sent_msgs_complete = 1;
+           //for (int j = 0; j < N_snds; ++j)
+           //{
+           //    if (async_fbd->send_finalMsg[j] == 2)
+           //    {
+           //        async_fbd->send_flags[j] = 0;
+           //        ParallelDescriptor::Test(async_fbd->send_reqs[j], async_fbd->send_flags[j], async_fbd->send_stat[j]);
+           //        if (async_fbd->send_flags[j] > 0)
+           //        {
+           //            async_fbd->send_finalMsg[j] = 3;
+           //        }
+           //        else
+           //        {
+           //           all_final_sent_msgs_complete = 0;
+           //        }
+           //    }
+           //}
 
-       if ((AsyncCheckRecvConverge()) && (all_final_sent_msgs_complete))
-       {
-           break;
+           if (AsyncCheckRecvConverge()/* && all_final_sent_msgs_complete*/)
+           {
+               break;
+           }
        }
    }
 
-   printf("%d %d %d %d\n", N_snds, N_rcvs, 
-		   *std::min_element(async_fbd->recv_count.begin(), async_fbd->recv_count.end()),
-		   *std::min_element(async_fbd->send_count.begin(), async_fbd->send_count.end()));
+   ParallelDescriptor::Waitall(async_fbd->send_reqs, async_fbd->send_stat);
+
+
+
+   //printf("%d %d %d %d\n", N_snds, N_rcvs, 
+   //       *std::min_element(async_fbd->recv_count.begin(), async_fbd->recv_count.end()),
+   //       *std::min_element(async_fbd->send_count.begin(), async_fbd->send_count.end()));
    //for (int j = 0; j < N_rcvs; ++j) printf("%d %d\n", async_fbd->recv_count[j], async_fbd->send_count[j]);
    //for (int j = 0; j < N_snds; ++j) printf("%d\n", async_fbd->send_count[j]);
 

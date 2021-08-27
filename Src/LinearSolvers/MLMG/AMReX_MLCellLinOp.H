@@ -151,6 +151,15 @@ public:
         Real location;
     };
 
+
+    /* begin JORDI section */
+    virtual void applyBC (int amrlev, int mglev, MultiFab& in, BCMode bc_mode, StateMode s_mode,
+                          bool& comm_complete, const MLMGBndry* bndry=nullptr, bool skip_fillboundary=false) const;
+
+    virtual void smooth (int amrlev, int mglev, MultiFab& sol, const MultiFab& rhs,
+                         bool& comm_complete, int redblack, bool skip_fillboundary=false) const;
+    /* end JORDI section */
+
 protected:
 
     bool m_has_metric_term = false;

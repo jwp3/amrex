@@ -172,6 +172,8 @@ struct FBData {
     int                 tag;
 
     /* begin JORDI section */
+    bool sends_complete;
+    bool recvs_complete;
     Vector<int> recv_flags;
     Vector<int> recv_count;
     Vector<char*> recv_data_inFlight;
@@ -827,6 +829,10 @@ public:
     void FillBoundary (int scomp, int ncomp, const IntVect& nghost, const Periodicity& period, bool cross = false);
 
     /* begin JORDI section */
+    void FillBoundary (int scomp, int ncomp, const IntVect& nghost, const Periodicity& period, 
+                       bool& comm_complete, bool cross = false);
+    template <class F=FAB, typename std::enable_if<IsBaseFab<F>::value,int>::type = 0>
+    void FillBoundary_finish (bool& comm_complete);
     template <class F=FAB, typename std::enable_if<IsBaseFab<F>::value,int>::type = 0>
     void AsyncFillBoundary (int scomp,
                             int ncomp,
@@ -1125,8 +1131,7 @@ public:
                                        Vector<const CopyComTagsContainer*>& send_cctc,
                                        int                                  ncomp) const;
 
-    int AsyncCheckSendConverge (int extern_converge,
-                                int num_msgs_per_neighb);
+    int AsyncCheckSendConverge (int num_msgs_per_neighb);
 
     int AsyncCheckRecvConverge ();
 
@@ -1135,9 +1140,10 @@ public:
 
     /* begin JORDI section */
     FBData<FAB> *async_fbd;
+    FBData<FAB> *fbd = nullptr;
     /* end JORDI section */
 
-    std::unique_ptr<FBData<FAB>> fbd;
+    //std::unique_ptr<FBData<FAB>> fbd;
 
     std::unique_ptr<PCData<FAB>> pcd;
 };
@@ -2319,6 +2325,29 @@ FabArray<FAB>::FillBoundary (int scomp, int ncomp, const IntVect& nghost,
         FillBoundary_finish();
     }
 }
+
+/* begin JORDI section */
+template <class FAB>
+void
+FabArray<FAB>::FillBoundary (int scomp, int ncomp, const IntVect& nghost,
+                             const Periodicity& period, bool& comm_complete, bool cross)
+{
+    BL_PROFILE("FabArray::FillBoundary()");
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(nghost.allLE(nGrowVect()),
+                                     "FillBoundary: asked to fill more ghost cells than we have");
+    if ( nghost.max() > 0 ) {
+	if (!fbd)
+	{
+            FillBoundary_nowait(scomp, ncomp, nghost, period, cross);
+	    fbd->recvs_complete = false;
+	    fbd->sends_complete = false;
+	}
+	else {
+            FillBoundary_finish(comm_complete);
+	}
+    }
+}
+/* end JORDI section */
 
 template <class FAB>
 void
