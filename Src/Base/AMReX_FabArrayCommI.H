@@ -11,6 +11,11 @@ FabArray<FAB>::FBEP_nowait (int scomp, int ncomp, const IntVect& nghost,
 {
     AMREX_ASSERT_WITH_MESSAGE(!fbd, "FillBoundary_nowait() called when comm operation already in progress.");
 
+    ///* begin JORDI section */
+    //if (fbd) delete fbd;
+    //fbd = new FBData<FAB>();
+    ///* end JORDI section */
+
     bool work_to_do;
     if (enforce_periodicity_only) {
         work_to_do = period.isAnyPeriodic();
@@ -69,9 +74,9 @@ FabArray<FAB>::FBEP_nowait (int scomp, int ncomp, const IntVect& nghost,
     }
 
     /* begin JORDI section */
+    //fbd = std::make_unique<FBData<FAB>>();
     fbd = new FBData<FAB>();
     /* end JORDI section */
-    //fbd = std::make_unique<FBData<FAB>>();
 
     fbd->fb    = &TheFB;
     fbd->scomp = scomp;
@@ -1196,7 +1201,7 @@ FabArray<FAB>::FillBoundary_finish (bool& comm_complete)
 
     BL_PROFILE("FillBoundary_finish()");
 
-    if (!fbd) { n_filled = IntVect::TheZeroVector(); return; }
+    if (!fbd) { n_filled = IntVect::TheZeroVector(); comm_complete = true; return; }
 
     const FB* TheFB = fbd->fb;
     const int N_rcvs = TheFB->m_RcvTags->size();
@@ -1204,9 +1209,15 @@ FabArray<FAB>::FillBoundary_finish (bool& comm_complete)
     {
         int actual_n_rcvs = N_rcvs - std::count(fbd->recv_data.begin(), fbd->recv_data.end(), nullptr);
 
+	//printf("%d %d %d %d\n", fbd->sends_complete, fbd->recvs_complete, N_rcvs, actual_n_rcvs);
+        //fflush(stdout);
+
         if (actual_n_rcvs > 0) {
-            //ParallelDescriptor::Waitall(fbd->recv_reqs, fbd->recv_stat);
             int test_recv_flag = 0;
+
+            //ParallelDescriptor::Waitall(fbd->recv_reqs, fbd->recv_stat);
+            //test_recv_flag = 1;
+
             ParallelDescriptor::Test(fbd->recv_reqs, test_recv_flag, fbd->recv_stat);
 	    if (test_recv_flag)
             {
@@ -1268,12 +1279,17 @@ FabArray<FAB>::FillBoundary_finish (bool& comm_complete)
         }
     }
 
+
     const int N_snds = TheFB->m_SndTags->size();
     if (N_snds > 0) {
         Vector<MPI_Status> stats(fbd->send_reqs.size());
-        //ParallelDescriptor::Waitall(fbd->send_reqs, stats);
 	int test_send_flag = 0;
+
+        //ParallelDescriptor::Waitall(fbd->send_reqs, stats);
+	//int test_send_flag;
+	
         ParallelDescriptor::Test(fbd->send_reqs, test_send_flag, fbd->send_stat);
+
         if (test_send_flag)
         {
             fbd->sends_complete = true;

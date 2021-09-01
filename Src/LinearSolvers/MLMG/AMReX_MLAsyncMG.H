@@ -36,9 +36,21 @@ public:
     void asyncSmoothSweep (MLLinOp *async_linop,
                            int amrlev, int mglev, MultiFab& sol, const MultiFab& rhs,
                            bool skip_fillboundary);
+    void testComputeResidual (int alev);
+    void testComputeResOfCorrection (int amrlev, int mglev);
+    void syncSmooth (int amrlev, int mglev, int num_smooth_sweeps, bool skip_fillboundary = false);
+    Real testResNormInf (int alev, bool& comm_complete, bool local = false);
+    void testInit(bool& comm_complete);
 
+    Vector<std::unique_ptr<MultiFab>> sol2;
     Vector<std::unique_ptr<MultiFab>> cor_smooth;
     Vector<std::unique_ptr<MultiFab>> Acor;
+
+    int test_count = 0;
+    MPI_Request reduce_req;
+    MPI_Status reduce_stat;
+    Real *reduce_recv;
+    Real *reduce_send;
 };
 
 }

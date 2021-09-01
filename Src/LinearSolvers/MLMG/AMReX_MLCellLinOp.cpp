@@ -1424,27 +1424,105 @@ MLCellLinOp::Counters MLCellLinOp::perf_counters;
  *
  *********************************************/
 
-//void
-//MLCellLinOp::apply (int amrlev, int mglev, MultiFab& out, MultiFab& in, BCMode bc_mode,
-//                    StateMode s_mode, const MLMGBndry* bndry) const
-//{
-//    BL_PROFILE("MLCellLinOp::apply()");
-//    applyBC(amrlev, mglev, in, bc_mode, s_mode, bndry);
-//#ifdef AMREX_SOFT_PERF_COUNTERS
-//    perf_counters.apply(out);
-//#endif
-//    Fapply(amrlev, mglev, out, in);
-//}
+Real
+MLCellLinOp::testXdoty (int /*amrlev*/, int /*mglev*/, const MultiFab& x, const MultiFab& y, bool local, bool& comm_complete)
+{
+    const int ncomp = getNComp();
+    const int nghost = 0;
+    Real result;
+
+    //Real result = MultiFab::Dot(x,0,y,0,ncomp,nghost,true);
+    //if (!local) {
+    //    ParallelAllReduce::Sum(result, ParallelContext::CommunicatorSub());
+    //}
+    //comm_complete = true;
+    //return result;
+
+    if (!local)
+    {
+      //  reduce_req = MPI_REQUEST_NULL;
+      //  reduce_recv = new Real[1];
+      //  reduce_send = new Real[1];
+      //  reduce_send[0] = MultiFab::Dot(x,0,y,0,ncomp,nghost,true);
+      //  comm_complete = true;
+      //  //ParallelAllReduce::Sum(reduce_recv, 1, ParallelContext::CommunicatorSub());
+      //  //ParallelAllReduce::Isum(reduce_recv, 1, ParallelContext::CommunicatorSub(), &reduce_req);
+      //  MPI_Iallreduce(reduce_send, reduce_recv, 1, MPI_DOUBLE, MPI_SUM, ParallelContext::CommunicatorSub(), &reduce_req);
+      //  ParallelDescriptor::Wait(reduce_req, reduce_stat);
+      //  result = reduce_recv[0];
+      //  delete[] reduce_recv;
+      //  delete[] reduce_send;
+      //  return result;
+
+	if (test_count == 0)
+	{
+            reduce_req = MPI_REQUEST_NULL;
+            reduce_recv = new Real[1];
+            reduce_send = new Real[1];
+            reduce_send[0] = MultiFab::Dot(x,0,y,0,ncomp,nghost,true);
+	    MPI_Iallreduce(reduce_send, reduce_recv, 1, MPI_DOUBLE, MPI_SUM, ParallelContext::CommunicatorSub(), &reduce_req);
+	}
+
+	int reduce_flag = 0;
+	ParallelDescriptor::Test(reduce_req, reduce_flag, reduce_stat);
+	if (reduce_flag)
+	{
+            comm_complete = true;
+	    result = reduce_recv[0];
+	    delete[] reduce_recv;
+	    delete[] reduce_send;
+	    test_count++;
+	}
+	else
+	{
+            comm_complete = false;
+            test_count++;
+	    return 0;
+	}
+    }
+    else
+    {
+        result = MultiFab::Dot(x,0,y,0,ncomp,nghost,true);
+        comm_complete = true;
+    }
+
+    return result;
+}
 
 void
-MLCellLinOp::smooth (int amrlev, int mglev, MultiFab& sol, const MultiFab& rhs,
-                     bool& comm_complete, int redblack, bool skip_fillboundary) const
+MLCellLinOp::testInit(bool& comm_complete)
 {
-    BL_PROFILE("MLCellLinOp::smooth()");
-    applyBC(amrlev, mglev, sol, BCMode::Homogeneous, StateMode::Solution,
-            comm_complete, nullptr, skip_fillboundary);
+    test_count = 0;
+    comm_complete = false;
+}
+
+void
+MLCellLinOp::testApply (int amrlev, int mglev, MultiFab& out, MultiFab& in, BCMode bc_mode,
+                        StateMode s_mode, bool& comm_complete, const MLMGBndry* bndry)
+{
+    BL_PROFILE("MLCellLinOp::testApply()");
+    testApplyBC(amrlev, mglev, in, bc_mode, s_mode, comm_complete, bndry);
     if (!comm_complete)
     {
+        test_count++;
+        return;
+    }
+#ifdef AMREX_SOFT_PERF_COUNTERS
+    perf_counters.apply(out);
+#endif
+    Fapply(amrlev, mglev, out, in);
+}
+
+void
+MLCellLinOp::testSmooth (int amrlev, int mglev, MultiFab& sol, const MultiFab& rhs,
+                         bool& comm_complete, int redblack, bool skip_fillboundary)
+{
+    BL_PROFILE("MLCellLinOp::testSmooth()");
+    testApplyBC(amrlev, mglev, sol, BCMode::Homogeneous, StateMode::Solution,
+                comm_complete, nullptr, skip_fillboundary);
+    if (!comm_complete)
+    {
+	test_count++;
         return;
     }
 #ifdef AMREX_SOFT_PERF_COUNTERS
@@ -1453,52 +1531,66 @@ MLCellLinOp::smooth (int amrlev, int mglev, MultiFab& sol, const MultiFab& rhs,
     Fsmooth(amrlev, mglev, sol, rhs, redblack);
 }
 
-//void
-//MLCellLinOp::solutionResidual (int amrlev, MultiFab& resid, MultiFab& x, const MultiFab& b,
-//                               const MultiFab* crse_bcdata)
-//{
-//    BL_PROFILE("MLCellLinOp::solutionResidual()");
-//    const int ncomp = getNComp();
-//    if (crse_bcdata != nullptr) {
-//        updateSolBC(amrlev, *crse_bcdata);
-//    }
-//    const int mglev = 0;
-//    apply(amrlev, mglev, resid, x, BCMode::Inhomogeneous, StateMode::Solution,
-//          m_bndry_sol[amrlev].get());
-//
-//    AMREX_ALWAYS_ASSERT(resid.nComp() == b.nComp());
-//    MultiFab::Xpay(resid, Real(-1.0), b, 0, 0, ncomp, 0);
-//}
-//
-//void
-//MLCellLinOp::correctionResidual (int amrlev, int mglev, MultiFab& resid, MultiFab& x, const MultiFab& b,
-//                                 BCMode bc_mode, const MultiFab* crse_bcdata)
-//{
-//    BL_PROFILE("MLCellLinOp::correctionResidual()");
-//    const int ncomp = getNComp();
-//    if (bc_mode == BCMode::Inhomogeneous)
-//    {
-//        if (crse_bcdata)
-//        {
-//            AMREX_ALWAYS_ASSERT(mglev == 0);
-//            AMREX_ALWAYS_ASSERT(amrlev > 0);
-//            updateCorBC(amrlev, *crse_bcdata);
-//        }
-//        apply(amrlev, mglev, resid, x, BCMode::Inhomogeneous, StateMode::Correction,
-//              m_bndry_cor[amrlev].get());
-//    }
-//    else
-//    {
-//        AMREX_ALWAYS_ASSERT(crse_bcdata == nullptr);
-//        apply(amrlev, mglev, resid, x, BCMode::Homogeneous, StateMode::Correction, nullptr);
-//    }
-//
-//    MultiFab::Xpay(resid, Real(-1.0), b, 0, 0, ncomp, 0);
-//}
+void
+MLCellLinOp::testSolutionResidual (int amrlev, MultiFab& resid, MultiFab& x, const MultiFab& b,
+                                   bool& comm_complete, const MultiFab* crse_bcdata)
+{
+
+    BL_PROFILE("MLCellLinOp::testSolutionResidual()");
+    if (test_count == 0)
+    {
+        if (crse_bcdata != nullptr) {
+            updateSolBC(amrlev, *crse_bcdata);
+        }
+    }
+    const int ncomp = getNComp();
+    const int mglev = 0;
+    testApply(amrlev, mglev, resid, x, BCMode::Inhomogeneous, StateMode::Solution,
+              comm_complete, m_bndry_sol[amrlev].get());
+    if (!comm_complete)
+    {
+        test_count++;
+        return;
+    }
+
+    AMREX_ALWAYS_ASSERT(resid.nComp() == b.nComp());
+    MultiFab::Xpay(resid, Real(-1.0), b, 0, 0, ncomp, 0);
+}
 
 void
-MLCellLinOp::applyBC (int amrlev, int mglev, MultiFab& in, BCMode bc_mode, StateMode,
-                      bool& comm_complete, const MLMGBndry* bndry, bool skip_fillboundary) const
+MLCellLinOp::testCorrectionResidual (int amrlev, int mglev, MultiFab& resid, MultiFab& x, const MultiFab& b,
+                                     BCMode bc_mode, bool& comm_complete, const MultiFab* crse_bcdata)
+{
+    BL_PROFILE("MLCellLinOp::testCorrectionResidual()");
+    const int ncomp = getNComp();
+    if (bc_mode == BCMode::Inhomogeneous)
+    {
+        if (crse_bcdata && test_count == 0)
+        {
+            AMREX_ALWAYS_ASSERT(mglev == 0);
+            AMREX_ALWAYS_ASSERT(amrlev > 0);
+            updateCorBC(amrlev, *crse_bcdata);
+        }
+        testApply(amrlev, mglev, resid, x, BCMode::Inhomogeneous, StateMode::Correction,
+                  comm_complete, m_bndry_cor[amrlev].get());
+    }
+    else
+    {
+        AMREX_ALWAYS_ASSERT(crse_bcdata == nullptr);
+        testApply(amrlev, mglev, resid, x, BCMode::Homogeneous, StateMode::Correction, comm_complete, nullptr);
+    }
+    if (!comm_complete)
+    {
+        test_count++;
+        return;
+    }
+
+    MultiFab::Xpay(resid, Real(-1.0), b, 0, 0, ncomp, 0);
+}
+
+void
+MLCellLinOp::testApplyBC (int amrlev, int mglev, MultiFab& in, BCMode bc_mode, StateMode,
+                          bool& comm_complete, const MLMGBndry* bndry, bool skip_fillboundary)
 {
     BL_PROFILE("MLCellLinOp::applyBC()");
     // No coarsened boundary values, cannot apply inhomog at mglev>0.
@@ -1509,8 +1601,9 @@ MLCellLinOp::applyBC (int amrlev, int mglev, MultiFab& in, BCMode bc_mode, State
     const int cross = isCrossStencil();
     const int tensorop = isTensorOp();
 
-    if (!skip_fillboundary) {
-        in.FillBoundary(0, ncomp, in.nGrowVect(), m_geom[amrlev][mglev].periodicity(), comm_complete, cross);
+    if (!skip_fillboundary)
+    {
+        in.FillBoundary(0, ncomp, m_geom[amrlev][mglev].periodicity(), comm_complete, cross);
     }
     else
     {

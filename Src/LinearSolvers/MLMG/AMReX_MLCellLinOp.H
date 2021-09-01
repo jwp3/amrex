@@ -153,11 +153,23 @@ public:
 
 
     /* begin JORDI section */
-    virtual void applyBC (int amrlev, int mglev, MultiFab& in, BCMode bc_mode, StateMode s_mode,
-                          bool& comm_complete, const MLMGBndry* bndry=nullptr, bool skip_fillboundary=false) const;
-
-    virtual void smooth (int amrlev, int mglev, MultiFab& sol, const MultiFab& rhs,
-                         bool& comm_complete, int redblack, bool skip_fillboundary=false) const;
+    virtual void testInit(bool& comm_complete);
+    virtual Real testXdoty (int amrlev, int mglev, const MultiFab& x, const MultiFab& y, bool local, bool& comm_complete);
+    virtual void testApplyBC (int amrlev, int mglev, MultiFab& in, BCMode bc_mode, StateMode s_mode,
+                              bool& comm_complete, const MLMGBndry* bndry=nullptr, bool skip_fillboundary=false);
+    virtual void testApply (int amrlev, int mglev, MultiFab& out, MultiFab& in, BCMode bc_mode,
+                            StateMode s_mode, bool& comm_complete, const MLMGBndry* bndry=nullptr);
+    virtual void testSmooth (int amrlev, int mglev, MultiFab& sol, const MultiFab& rhs,
+                             bool& comm_complete, int redblack, bool skip_fillboundary=false);
+    virtual void testSolutionResidual (int amrlev, MultiFab& resid, MultiFab& x, const MultiFab& b,
+                                       bool& comm_complete, const MultiFab* crse_bcdata=nullptr);
+    virtual void testCorrectionResidual (int amrlev, int mglev, MultiFab& resid, MultiFab& x, const MultiFab& b,
+                                         BCMode bc_mode, bool& comm_complete, const MultiFab* crse_bcdata=nullptr);
+    int test_count = 0;
+    MPI_Request reduce_req;
+    MPI_Status reduce_stat;
+    Real *reduce_recv;
+    Real *reduce_send;
     /* end JORDI section */
 
 protected:

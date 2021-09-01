@@ -42,6 +42,7 @@ MyTest::solvePoisson ()
 
     if (composite_solve)
     {
+        printf("hello\n");
 
         MLPoisson mlpoisson(geom, grids, dmap, info);
 
@@ -78,7 +79,8 @@ MyTest::solvePoisson ()
             mlmg.setBottomSolver(MLMG::BottomSolver::petsc);
         }
 #endif
-        if (use_async_solver){
+        if (use_async_solver)
+	{
            mlmg.asyncSolve(GetVecOfPtrs(solution), GetVecOfConstPtrs(rhs), tol_rel, tol_abs);
         }
         else {
@@ -107,7 +109,9 @@ MyTest::solvePoisson ()
 
             mlpoisson.setLevelBC(0, &solution[ilev]);
 
-            MLMG mlmg(mlpoisson);
+	    ParmParse pp;
+            pp.query("use_async_solver", use_async_solver);
+            MLAsyncMG mlmg(mlpoisson);
             mlmg.setMaxIter(max_iter);
             mlmg.setMaxFmgIter(max_fmg_iter);
             mlmg.setVerbose(verbose);
@@ -123,8 +127,13 @@ MyTest::solvePoisson ()
                 mlmg.setBottomSolver(MLMG::BottomSolver::petsc);
             }
 #endif
-
-            mlmg.solve({&solution[ilev]}, {&rhs[ilev]}, tol_rel, tol_abs);
+	    if (use_async_solver)
+            {
+                mlmg.asyncSolve({&solution[ilev]}, {&rhs[ilev]}, tol_rel, tol_abs);
+            }
+            else {
+                mlmg.solve({&solution[ilev]}, {&rhs[ilev]}, tol_rel, tol_abs);
+            }
         }
     }
 }

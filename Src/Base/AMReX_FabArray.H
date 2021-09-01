@@ -829,8 +829,10 @@ public:
     void FillBoundary (int scomp, int ncomp, const IntVect& nghost, const Periodicity& period, bool cross = false);
 
     /* begin JORDI section */
-    void FillBoundary (int scomp, int ncomp, const IntVect& nghost, const Periodicity& period, 
+    void FillBoundary (int scomp, int ncomp, const Periodicity& period,
                        bool& comm_complete, bool cross = false);
+    //void FillBoundary (int scomp, int ncomp, const IntVect& nghost, const Periodicity& period, 
+    //                   bool& comm_complete, bool cross = false);
     template <class F=FAB, typename std::enable_if<IsBaseFab<F>::value,int>::type = 0>
     void FillBoundary_finish (bool& comm_complete);
     template <class F=FAB, typename std::enable_if<IsBaseFab<F>::value,int>::type = 0>
@@ -2326,29 +2328,6 @@ FabArray<FAB>::FillBoundary (int scomp, int ncomp, const IntVect& nghost,
     }
 }
 
-/* begin JORDI section */
-template <class FAB>
-void
-FabArray<FAB>::FillBoundary (int scomp, int ncomp, const IntVect& nghost,
-                             const Periodicity& period, bool& comm_complete, bool cross)
-{
-    BL_PROFILE("FabArray::FillBoundary()");
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(nghost.allLE(nGrowVect()),
-                                     "FillBoundary: asked to fill more ghost cells than we have");
-    if ( nghost.max() > 0 ) {
-	if (!fbd)
-	{
-            FillBoundary_nowait(scomp, ncomp, nghost, period, cross);
-	    fbd->recvs_complete = false;
-	    fbd->sends_complete = false;
-	}
-	else {
-            FillBoundary_finish(comm_complete);
-	}
-    }
-}
-/* end JORDI section */
-
 template <class FAB>
 void
 FabArray<FAB>::FillBoundary_nowait (bool cross)
@@ -2533,6 +2512,77 @@ FabArray<FAB>::RecvLayoutMask (const CommMetaData& thecmd)
     }
     return r;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/**********************************
+ *
+ *      begin JORDI section
+ *
+ **********************************/
+
+template <class FAB>
+void
+FabArray<FAB>::FillBoundary (int scomp, int ncomp, const Periodicity& period, bool& comm_complete, bool cross)
+{
+    BL_PROFILE("FabArray::FillBoundary()");
+    if ( n_grow.max() > 0 ) {
+        if (fbd == nullptr)
+        {
+            FillBoundary_nowait(scomp, ncomp, n_grow, period, cross);
+	    if (fbd)
+            {
+                fbd->recvs_complete = false;
+                fbd->sends_complete = false;
+            }
+	    else 
+	    {
+                comm_complete = true;
+            }
+        }
+        //else
+        //{
+	    //FillBoundary_finish();
+            FillBoundary_finish(comm_complete);
+        //}
+    }
+}
+
+//template <class FAB>
+//void
+//FabArray<FAB>::FillBoundary (int scomp, int ncomp, const IntVect& nghost,
+//                             const Periodicity& period, bool& comm_complete, bool cross)
+//{
+//    BL_PROFILE("FabArray::FillBoundary()");
+//    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(nghost.allLE(nGrowVect()),
+//                                     "FillBoundary: asked to fill more ghost cells than we have");
+//    //if ( nghost.max() > 0 ) {
+//    //    if (fbd == nullptr)
+//    //    {
+//    //        FillBoundary_nowait(scomp, ncomp, nghost, period, cross);
+//    //        fbd->recvs_complete = false;
+//    //        fbd->sends_complete = false;
+//    //    }
+//    //    else
+//    //    {
+//    //        FillBoundary_finish(comm_complete);
+//    //    }
+//    //}
+//}
+/* end JORDI section */
+
 
 }
 

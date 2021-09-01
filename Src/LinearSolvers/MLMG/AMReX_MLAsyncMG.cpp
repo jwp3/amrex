@@ -106,11 +106,20 @@ MLAsyncMG::asyncSolve (const Vector<MultiFab*>& a_sol, const Vector<MultiFab con
 
             converged = false;
 
-            computeResidual(finest_amr_lev);
+            testComputeResidual(finest_amr_lev);
 
             if (is_nsolve) continue;
 
             Real fine_norminf = ResNormInf(finest_amr_lev);
+            {
+                bool comm_complete;
+		testInit(comm_complete);
+                while (!comm_complete)
+                {
+                    fine_norminf = testResNormInf(finest_amr_lev, comm_complete);
+                }
+            }
+
             m_iter_fine_resnorm0.push_back(fine_norminf);
             composite_norminf = fine_norminf;
             if (verbose >= 2) {
@@ -119,22 +128,24 @@ MLAsyncMG::asyncSolve (const Vector<MultiFab*>& a_sol, const Vector<MultiFab con
             }
             bool fine_converged = (fine_norminf <= res_target);
 
-            if (namrlevs == 1 && fine_converged) {
-                converged = true;
-            } else if (fine_converged) {
-                // finest level is converged, but we still need to test the coarse levels
-                computeMLResidual(finest_amr_lev-1);
-                Real crse_norminf = MLResNormInf(finest_amr_lev-1);
-                if (verbose >= 2) {
-                    amrex::Print() << "MLAsyncMG: Iteration " << std::setw(3) << iter+1
-                                   << " Crse resid/" << norm_name << " = "
-                                   << crse_norminf/max_norm << "\n";
-                }
-                converged = (crse_norminf <= res_target);
-                composite_norminf = std::max(fine_norminf, crse_norminf);
-            } else {
-                converged = false;
-            }
+            //if (namrlevs == 1 && fine_converged) {
+            //    converged = true;
+            //} else if (fine_converged) {
+            //    // finest level is converged, but we still need to test the coarse levels
+            //    computeMLResidual(finest_amr_lev-1);
+            //    Real crse_norminf = MLResNormInf(finest_amr_lev-1);
+            //    if (verbose >= 2) {
+            //        amrex::Print() << "MLAsyncMG: Iteration " << std::setw(3) << iter+1
+            //                       << " Crse resid/" << norm_name << " = "
+            //                       << crse_norminf/max_norm << "\n";
+            //    }
+            //    converged = (crse_norminf <= res_target);
+            //    composite_norminf = std::max(fine_norminf, crse_norminf);
+            //} else {
+            //    converged = false;
+            //}
+
+	    if (fine_converged) converged = true;
 
             if (converged) {
                 if (verbose >= 1) {
@@ -199,6 +210,124 @@ MLAsyncMG::asyncSolve (const Vector<MultiFab*>& a_sol, const Vector<MultiFab con
     return composite_norminf;
 }
 
+Real
+MLAsyncMG::testResNormInf (int alev, bool& comm_complete, bool local)
+{
+    BL_PROFILE("MLMG::ResNormInf()");
+    const int ncomp = linop.getNComp();
+    const int mglev = 0;
+    Real norm = 0.0;
+    MultiFab* pmf = &(res[alev][mglev]);
+//#ifdef AMREX_USE_EB
+//    if (linop.isCellCentered() && scratch[alev]) {
+//        pmf = scratch[alev].get();
+//        MultiFab::Copy(*pmf, res[alev][mglev], 0, 0, ncomp, 0);
+//        auto factory = dynamic_cast<EBFArrayBoxFactory const*>(linop.Factory(alev));
+//        if (factory) {
+//            const MultiFab& vfrac = factory->getVolFrac();
+//            for (int n=0; n < ncomp; ++n) {
+//                MultiFab::Multiply(*pmf, vfrac, 0, n, 1, 0);
+//            }
+//        } else {
+//            amrex::Abort("MLMG::ResNormInf: not EB Factory");
+//        }
+//    }
+//#endif
+    if (!local)
+    {
+        if (test_count == 0)
+        {
+            for (int n = 0; n < ncomp; n++)
+            {
+                Real newnorm = 0.0;
+                if (fine_mask[alev]) {
+                    newnorm = pmf->norm0(*fine_mask[alev],n,0,true);
+                } else {
+                    newnorm = pmf->norm0(n,0,true);
+                }
+                norm = std::max(norm, newnorm);
+            }
+	    reduce_req = MPI_REQUEST_NULL;
+            reduce_recv = new Real[1];
+            reduce_send = new Real[1];
+	    reduce_send[0] = norm;
+	    MPI_Iallreduce(reduce_send, reduce_recv, 1, MPI_DOUBLE, MPI_MAX, ParallelContext::CommunicatorSub(), &reduce_req);
+	}
+
+	int reduce_flag = 0;
+        ParallelDescriptor::Test(reduce_req, reduce_flag, reduce_stat);
+        if (reduce_flag)
+        {
+            comm_complete = true;
+            norm = reduce_recv[0];
+            delete[] reduce_recv;
+            delete[] reduce_send;
+            test_count++;
+        }
+        else
+        {
+            comm_complete = false;
+            test_count++;
+            return 0;
+        }
+    }
+    else
+    {
+        for (int n = 0; n < ncomp; n++)
+        {
+            Real newnorm = 0.0;
+            if (fine_mask[alev]) {
+                newnorm = pmf->norm0(*fine_mask[alev],n,0,true);
+            } else {
+                newnorm = pmf->norm0(n,0,true);
+            }
+            norm = std::max(norm, newnorm);
+        }
+    }
+
+    return norm;
+}
+
+void
+MLAsyncMG::testComputeResidual (int alev)
+{
+    BL_PROFILE("MLMG::computeResidual()");
+
+    MultiFab& x = *sol[alev];
+    const MultiFab& b = rhs[alev];
+    MultiFab& r = res[alev][0];
+
+    const MultiFab* crse_bcdata = nullptr;
+    //if (alev > 0) {
+    //    crse_bcdata = sol[alev-1];
+    //}
+
+    MLCellLinOp *cell_linop = dynamic_cast<MLCellLinOp *>(&linop);
+    bool comm_complete;
+    cell_linop->testInit(comm_complete);
+    while (!comm_complete)
+    {
+        cell_linop->testSolutionResidual(alev, r, x, b, comm_complete, crse_bcdata);
+    }
+}
+
+void
+MLAsyncMG::testComputeResOfCorrection (int amrlev, int mglev)
+{
+    BL_PROFILE("MLMG:computeResOfCorrection()");
+    MultiFab& x = *cor[amrlev][mglev];
+    const MultiFab& b = res[amrlev][mglev];
+    MultiFab& r = rescor[amrlev][mglev];
+
+    MLCellLinOp *cell_linop = dynamic_cast<MLCellLinOp *>(&linop);
+    bool comm_complete;
+    cell_linop->testInit(comm_complete);
+    while (!comm_complete)
+    {
+        cell_linop->testCorrectionResidual(amrlev, mglev, r, x, b, BCMode::Homogeneous, comm_complete);
+    }
+}
+
 // in  : Residual (res) on the finest AMR level
 // out : sol on all AMR levels
 void MLAsyncMG::asyncOneIter (int iter)
@@ -206,61 +335,101 @@ void MLAsyncMG::asyncOneIter (int iter)
     BL_PROFILE("MLMG::oneIter()");
 
     int ncomp = linop.getNComp();
-    int nghost = 0;
-    if (cf_strategy == CFStrategy::ghostnodes) nghost = linop.getNGrow();
+    //int nghost = 0;
+    //if (cf_strategy == CFStrategy::ghostnodes) nghost = linop.getNGrow();
 
-    for (int alev = finest_amr_lev; alev > 0; --alev)
-    {
-        mgAddVcycle(alev, 0);
+    //for (int alev = finest_amr_lev; alev > 0; --alev)
+    //{
+    //    mgAddVcycle(alev, 0);
 
-        MultiFab::Add(*sol[alev], *cor[alev][0], 0, 0, ncomp, nghost);
+    //    MultiFab::Add(*sol[alev], *cor[alev][0], 0, 0, ncomp, nghost);
 
-        // compute residual for the coarse AMR level
-        computeResWithCrseSolFineCor(alev-1,alev);
+    //    // compute residual for the coarse AMR level
+    //    computeResWithCrseSolFineCor(alev-1,alev);
 
-        if (alev != finest_amr_lev) {
-            std::swap(cor_hold[alev][0], cor[alev][0]); // save it for the up cycle
-        }
-    }
+    //    if (alev != finest_amr_lev) {
+    //        std::swap(cor_hold[alev][0], cor[alev][0]); // save it for the up cycle
+    //    }
+    //}
 
     // coarsest amr level
     {
-        // enforce solvability if appropriate
-        if (linop.isSingular(0) && linop.getEnforceSingularSolvable())
-        {
-            makeSolvable(0,0,res[0][0]);
-        }
+        //// enforce solvability if appropriate
+        //if (linop.isSingular(0) && linop.getEnforceSingularSolvable())
+        //{
+        //    makeSolvable(0,0,res[0][0]);
+        //}
         
         mgAddVcycle(0, 0);
 
         MultiFab::Add(*sol[0], *cor[0][0], 0, 0, ncomp, 0);
     }
 
-    for (int alev = 1; alev <= finest_amr_lev; ++alev)
-    {
-        // (Fine AMR correction) = I(Coarse AMR correction)
-        interpCorrection(alev);
+    //for (int alev = 1; alev <= finest_amr_lev; ++alev)
+    //{
+    //    // (Fine AMR correction) = I(Coarse AMR correction)
+    //    interpCorrection(alev);
 
-        MultiFab::Add(*sol[alev], *cor[alev][0], 0, 0, ncomp, nghost);
+    //    MultiFab::Add(*sol[alev], *cor[alev][0], 0, 0, ncomp, nghost);
 
-        if (alev != finest_amr_lev) {
-            MultiFab::Add(*cor_hold[alev][0], *cor[alev][0], 0, 0, ncomp, nghost);
-        }
+    //    if (alev != finest_amr_lev) {
+    //        MultiFab::Add(*cor_hold[alev][0], *cor[alev][0], 0, 0, ncomp, nghost);
+    //    }
 
-        // Update fine AMR level correction
-        computeResWithCrseCorFineCor(alev);
+    //    // Update fine AMR level correction
+    //    computeResWithCrseCorFineCor(alev);
 
-        mgAddVcycle(alev, 0);
+    //    mgAddVcycle(alev, 0);
 
-        MultiFab::Add(*sol[alev], *cor[alev][0], 0, 0, ncomp, nghost);
+    //    MultiFab::Add(*sol[alev], *cor[alev][0], 0, 0, ncomp, nghost);
 
-        if (alev != finest_amr_lev) {
-            MultiFab::Add(*cor[alev][0], *cor_hold[alev][0], 0, 0, ncomp, nghost);
-        }
-    }
+    //    if (alev != finest_amr_lev) {
+    //        MultiFab::Add(*cor[alev][0], *cor_hold[alev][0], 0, 0, ncomp, nghost);
+    //    }
+    //}
 
-    averageDownAndSync();
+    //averageDownAndSync();
 }
+
+//Real
+//MLMG::testResNormInf (int alev, bool local)
+//{
+//    BL_PROFILE("MLMG::ResNormInf()");
+//    const int ncomp = linop.getNComp();
+//    const int mglev = 0;
+//    Real norm = 0.0;
+//    MultiFab* pmf = &(res[alev][mglev]);
+//#ifdef AMREX_USE_EB
+//    if (linop.isCellCentered() && scratch[alev]) {
+//        pmf = scratch[alev].get();
+//        MultiFab::Copy(*pmf, res[alev][mglev], 0, 0, ncomp, 0);
+//        auto factory = dynamic_cast<EBFArrayBoxFactory const*>(linop.Factory(alev));
+//        if (factory) {
+//            const MultiFab& vfrac = factory->getVolFrac();
+//            for (int n=0; n < ncomp; ++n) {
+//                MultiFab::Multiply(*pmf, vfrac, 0, n, 1, 0);
+//            }
+//        } else {
+//            amrex::Abort("MLMG::ResNormInf: not EB Factory");
+//        }
+//    }
+//#endif
+//    for (int n = 0; n < ncomp; n++)
+//    {
+//        Real newnorm = 0.0;
+//        if (fine_mask[alev]) {
+//            newnorm = pmf->norm0(*fine_mask[alev],n,0,true);
+//        } else {
+//            newnorm = pmf->norm0(n,0,true);
+//        }
+//        norm = std::max(norm, newnorm);
+//    }
+//    if (!local)
+//    {
+//        ParallelAllReduce::Max(norm, ParallelContext::CommunicatorSub());
+//    }
+//    return norm;
+//}
 
 void
 MLAsyncMG::prepareForAsyncSolve (const Vector<MultiFab*>& a_sol, const Vector<MultiFab const*>& a_rhs)
@@ -325,59 +494,58 @@ MLAsyncMG::mgAddVcycle (int amrlev, int mglev_top)
        MultiFab& cor_smooth_alev = *cor_smooth[amrlev];
 
        cor_smooth_alev.setVal(0.0);
-       int num_top_async_smooth_sweeps = 100;
+       int num_top_async_smooth_sweeps = 1;
 
-       skip_fillboundary = true;
-       for (int i = 0; i < num_top_async_smooth_sweeps; ++i)
-       {
-	   for (int redblack = 0; redblack < 2; ++redblack)
-           {
-               bool comm_complete = false;
-               while (!comm_complete)
-               {
-                   cell_linop->smooth(amrlev, mglev_top, cor_smooth_alev, res_top, comm_complete, redblack, skip_fillboundary);
-               }
-	       skip_fillboundary = false;
-           }
-       }
+
 
        //skip_fillboundary = true;
-       //for (int i = 0; i < num_top_async_smooth_sweeps; ++i) {
-       //    linop.smooth(amrlev, mglev_top, cor_smooth_alev, res_top, skip_fillboundary);
-       //    skip_fillboundary = false;
+       //for (int i = 0; i < num_top_async_smooth_sweeps; ++i)
+       //{
+       //    for (int redblack = 0; redblack < 2; ++redblack)
+       //    {
+       //        bool comm_complete;
+       //        cell_linop->testInit(comm_complete);
+       //        while (!comm_complete)
+       //        {
+       //            cell_linop->testSmooth(amrlev, mglev_top, cor_smooth_alev, res_top, comm_complete, redblack, skip_fillboundary);
+       //        }
+       //        skip_fillboundary = false;
+       //    }
        //}
 
-       MultiFab::Add(cor_top, cor_smooth_alev, 0, 0, ncomp, nghost);
-       return;
+       ////skip_fillboundary = true;
+       ////for (int i = 0; i < num_top_async_smooth_sweeps; ++i) {
+       ////    linop.smooth(amrlev, mglev_top, cor_smooth_alev, res_top, skip_fillboundary);
+       ////    skip_fillboundary = false;
+       ////}
 
-       int sweep = 0;
-       int local_converge = 0;
-       cor_smooth_alev.AsyncSetup();
-       while (1)
-       {
-           //linop.smooth(amrlev, mglev_top, cor_top, res_top, true);
-           asyncSmoothSweep(&linop, amrlev, mglev_top, cor_smooth_alev, res_top, true);
-           sweep++;
-           if (sweep >= num_top_async_smooth_sweeps)
-	   {
-               local_converge = 1;
-           }
-           int converge_flag = cor_smooth_alev.AsyncCheckConverge(local_converge, num_top_async_smooth_sweeps);
-           if (converge_flag == 1){
-              break;
-           }
-       }
-       const int cross = cell_linop->isCrossStencil();
-       const Geometry& m_geom = cell_linop->Geom(amrlev, mglev_top);
-       cor_smooth_alev.AsyncCleanup(0, ncomp, cor_smooth_alev.nGrowVect(), m_geom.periodicity(), cross);
+       //MultiFab::Add(cor_top, cor_smooth_alev, 0, 0, ncomp, nghost);
+       //return;
 
-       MultiFab::Add(cor_top, cor_smooth_alev, 0, 0, ncomp, nghost);
-       MPI_Comm comm = ParallelContext::CommunicatorSub();
-       int rank = ParallelDescriptor::MyProc(comm);
-     //  printf("%d %d\n", rank, sweep);
-     //  fflush(stdout);
+       //int sweep = 0;
+       //int local_converge = 0;
+       //cor_smooth_alev.AsyncSetup();
+       //while (1)
+       //{
+       //    //linop.smooth(amrlev, mglev_top, cor_top, res_top, true);
+       //    asyncSmoothSweep(&linop, amrlev, mglev_top, cor_smooth_alev, res_top, true);
+       //    sweep++;
+       //    if (sweep >= num_top_async_smooth_sweeps)
+       //    {
+       //        local_converge = 1;
+       //    }
+       //    int converge_flag = cor_smooth_alev.AsyncCheckConverge(local_converge, num_top_async_smooth_sweeps);
+       //    if (converge_flag == 1){
+       //       break;
+       //    }
+       //}
+       //const int cross = cell_linop->isCrossStencil();
+       //const Geometry& m_geom = cell_linop->Geom(amrlev, mglev_top);
+       //cor_smooth_alev.AsyncCleanup(0, ncomp, cor_smooth_alev.nGrowVect(), m_geom.periodicity(), cross);
 
-       return;
+       //MultiFab::Add(cor_top, cor_smooth_alev, 0, 0, ncomp, nghost);
+
+       //return;
 
        if (0){
           /* Restrict finest residual to all coarse grids */
@@ -424,31 +592,55 @@ MLAsyncMG::mgAddVcycle (int amrlev, int mglev_top)
                 if (mglev == mglev_top+1 && inner_iter > 0){
                    skip_fillboundary = false;
                 }
-                else {
+                else
+		{
                    cor[amrlev][mglev]->setVal(0.0);
                    skip_fillboundary = true;
                 }
-                for (int i = 0; i < 1; ++i)
-                {
-                    linop.smooth(amrlev, mglev, *cor[amrlev][mglev], res[amrlev][mglev],
-                                 skip_fillboundary);
-                    skip_fillboundary = false;
-                }
-                computeResOfCorrection(amrlev, mglev);
+
+                //for (int i = 0; i < nu1; ++i)
+                //{
+                //    linop.smooth(amrlev, mglev, *cor[amrlev][mglev], res[amrlev][mglev],
+                //                 skip_fillboundary);
+                //    skip_fillboundary = false;
+                //}
+
+                syncSmooth(amrlev, mglev, nu1, skip_fillboundary);
+                testComputeResOfCorrection(amrlev, mglev);
                 linop.restriction(amrlev, mglev+1, res[amrlev][mglev+1], rescor[amrlev][mglev]);
              }
 
-             bottomSolve();
+	     {
+                 int mglev = mglev_top;
+
+	         //skip_fillboundary = true;
+                 //for (int i = 0; i < 10; ++i)
+                 //{
+                 //    linop.smooth(amrlev, mglev, *cor[amrlev][mglev], res[amrlev][mglev],
+                 //                 skip_fillboundary);
+                 //    skip_fillboundary = false;
+                 //}
+
+		 skip_fillboundary = true;
+                 syncSmooth(amrlev, mglev, nu1, skip_fillboundary);
+	     }
+
+             //bottomSolve();
+
 
              for (int mglev = mglev_bottom-1; mglev >= mglev_top+1; --mglev)
              {
-                addInterpCorrection(amrlev, mglev);
-                skip_fillboundary = false;
-                for (int i = 0; i < 1; ++i)
-                {
-                    linop.smooth(amrlev, mglev, *cor[amrlev][mglev], res[amrlev][mglev],
-                                 skip_fillboundary);
-                }
+                 addInterpCorrection(amrlev, mglev);
+
+                 //skip_fillboundary = false;
+                 //for (int i = 0; i < nu2; ++i)
+                 //{
+                 //    linop.smooth(amrlev, mglev, *cor[amrlev][mglev], res[amrlev][mglev],
+                 //                 skip_fillboundary);
+                 //}
+
+		 skip_fillboundary = false;
+                 syncSmooth(amrlev, mglev, nu1, skip_fillboundary);
              }
           }
 
@@ -467,10 +659,35 @@ MLAsyncMG::mgAddVcycle (int amrlev, int mglev_top)
           MultiFab& Acor_alev = *Acor[amrlev];
           MultiFab& rescor_top = rescor[amrlev][mglev_top];
 
-          linop.correctionResidual(amrlev, mglev_top, rescor_top, cor_smooth_alev, res_top, BCMode::Homogeneous);
+	  {
+	      bool comm_complete;
+              cell_linop->testInit(comm_complete);
+              while (!comm_complete)
+              {
+                  cell_linop->testCorrectionResidual(amrlev, mglev_top, rescor_top, cor_smooth_alev, res_top, BCMode::Homogeneous, comm_complete);
+	      }
+	  }
 
-          Real beta_numer = linop.xdoty(amrlev, mglev_top, cor_top, rescor_top, false);
-          linop.apply(amrlev, mglev_top, Acor_alev, cor_top, MLLinOp::BCMode::Homogeneous, MLLinOp::StateMode::Correction);
+          //Real beta_numer = linop.xdoty(amrlev, mglev_top, cor_top, rescor_top, false);
+	  Real beta_numer;
+	  {
+	      bool comm_complete;
+              cell_linop->testInit(comm_complete);
+              while (!comm_complete)
+              {
+                  beta_numer = cell_linop->testXdoty(amrlev, mglev_top, cor_top, rescor_top, false, comm_complete);
+	      }
+	  }
+
+	  {
+              bool comm_complete;
+              cell_linop->testInit(comm_complete);
+              while (!comm_complete)
+              {
+                 cell_linop->testApply(amrlev, mglev_top, Acor_alev, cor_top, MLLinOp::BCMode::Homogeneous, MLLinOp::StateMode::Correction, comm_complete);
+              }
+          }
+
           Real beta_denom = linop.xdoty(amrlev, mglev_top, cor_top, Acor_alev, false);
 
           Real beta = beta_numer/beta_denom;
@@ -488,13 +705,37 @@ MLAsyncMG::mgAddVcycle (int amrlev, int mglev_top)
     }
 }
 
+void
+MLAsyncMG::syncSmooth (int amrlev, int mglev, int num_smooth_sweeps, bool skip_fillboundary)
+{
+    BL_PROFILE("MLAsyncMG::syncSmooth()");
+
+    MLCellLinOp *cell_linop = dynamic_cast<MLCellLinOp *>(&linop);
+
+    //printf("%d\n", mglev);
+    //fflush(stdout);
+
+    for (int i = 0; i < num_smooth_sweeps; ++i)
+    {
+        for (int redblack = 0; redblack < 2; ++redblack)
+        {
+            bool comm_complete;
+            cell_linop->testInit(comm_complete);
+            while (!comm_complete)
+            {
+                cell_linop->testSmooth(amrlev, mglev, *cor[amrlev][mglev], res[amrlev][mglev], comm_complete, redblack, skip_fillboundary);
+            }
+            skip_fillboundary = false;
+        }
+    }
+}
 
 void
 MLAsyncMG::asyncSmoothSweep (MLLinOp *async_linop,
                              int amrlev, int mglev, MultiFab& sol, const MultiFab& rhs,
                              bool skip_fillboundary)
 {
-    BL_PROFILE("asyncSmoothSweep()");
+    BL_PROFILE("MLAsyncMG::asyncSmoothSweep()");
 
     MLCellLinOp *async_cell_linop = dynamic_cast<MLCellLinOp *>(async_linop);
     const int ncomp = async_cell_linop->getNComp();
@@ -514,6 +755,13 @@ MLAsyncMG::asyncSmoothSweep (MLLinOp *async_linop,
         async_cell_linop->Fsmooth(amrlev, mglev, sol, rhs, redblack);
     }
     sol.AsyncFillBoundary(0, ncomp, sol.nGrowVect(), m_geom.periodicity(), cross);
+}
+
+void
+MLAsyncMG::testInit(bool& comm_complete)
+{
+    test_count = 0;
+    comm_complete = false;
 }
 
 }
