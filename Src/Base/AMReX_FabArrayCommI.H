@@ -1787,65 +1787,65 @@ FabArray<FAB>::AsyncPostRcvs (const MapOfCopyComTagContainers&  RcvTags,
                    async_fbd->recv_count[i] = 0;
                 }
 
-	        //while (1)
-	        //{
-	        //    async_fbd->recv_flags[i] = 0;
-                //    ParallelDescriptor::Test(recv_reqs[i], async_fbd->recv_flags[i], async_fbd->recv_stat[i]);
-                //    if (async_fbd->recv_flags[i] > 0)
-                //    {
-		//	for (int j = 0; j < recv_size[i]; ++j)
-                //        {
-                //            recv_data[i][j] = async_fbd->recv_data_inFlight[i][j];
-		//	}
-                //        recv_reqs[i] = ParallelDescriptor::Arecv
-                //            (async_fbd->recv_data_inFlight[i], recv_size[i], rank, SeqNum, comm).req();
-                //        async_fbd->recv_count[i]++;
-                //    }
-	        //    else {
-                //        break;
-                //    }
-	        //}
-		//
-		//async_fbd->recv_flags[i] = 0;
-                //ParallelDescriptor::Test(async_fbd->recv_reqs_finalMsg[i], async_fbd->recv_flags[i], async_fbd->recv_stat_finalMsg[i]);
-                //if (async_fbd->recv_flags[i] > 0)
-                //{
-                //    for (int j = 0; j < recv_size[i]; ++j)
-                //    {
-                //        recv_data[i][j] = async_fbd->recv_data_finalMsg[i][j];
-                //    }
-                //    async_fbd->recvd_finalMsg[i] = 1;
-                //    async_fbd->recv_count[i]++;
-                //    MPI_Cancel(&(recv_reqs[i]));
-                //}
-
+	        while (1)
+	        {
+	            async_fbd->recv_flags[i] = 0;
+                    ParallelDescriptor::Test(recv_reqs[i], async_fbd->recv_flags[i], async_fbd->recv_stat[i]);
+                    if (async_fbd->recv_flags[i] > 0)
+                    {
+			for (int j = 0; j < recv_size[i]; ++j)
+                        {
+                            recv_data[i][j] = async_fbd->recv_data_inFlight[i][j];
+			}
+                        recv_reqs[i] = ParallelDescriptor::Arecv
+                            (async_fbd->recv_data_inFlight[i], recv_size[i], rank, SeqNum, comm).req();
+                        async_fbd->recv_count[i]++;
+                    }
+	            else {
+                        break;
+                    }
+	        }
+		
 		async_fbd->recv_flags[i] = 0;
-                ParallelDescriptor::Test(recv_reqs[i], async_fbd->recv_flags[i], async_fbd->recv_stat[i]);
+                ParallelDescriptor::Test(async_fbd->recv_reqs_finalMsg[i], async_fbd->recv_flags[i], async_fbd->recv_stat_finalMsg[i]);
                 if (async_fbd->recv_flags[i] > 0)
                 {
                     for (int j = 0; j < recv_size[i]; ++j)
                     {
-                        recv_data[i][j] = async_fbd->recv_data_inFlight[i][j];
+                        recv_data[i][j] = async_fbd->recv_data_finalMsg[i][j];
                     }
-                    recv_reqs[i] = ParallelDescriptor::Arecv
-                        (async_fbd->recv_data_inFlight[i], recv_size[i], rank, SeqNum, comm).req();
+                    async_fbd->recvd_finalMsg[i] = 1;
                     async_fbd->recv_count[i]++;
+                    MPI_Cancel(&(recv_reqs[i]));
                 }
-		else 
-		{
-                    async_fbd->recv_flags[i] = 0;
-                    ParallelDescriptor::Test(async_fbd->recv_reqs_finalMsg[i], async_fbd->recv_flags[i], async_fbd->recv_stat_finalMsg[i]);
-                    if (async_fbd->recv_flags[i] > 0)
-                    {
-                        for (int j = 0; j < recv_size[i]; ++j)
-                        {
-                            recv_data[i][j] = async_fbd->recv_data_finalMsg[i][j];
-                        }
-                        async_fbd->recvd_finalMsg[i] = 1;
-                        async_fbd->recv_count[i]++;
-                        MPI_Cancel(&(recv_reqs[i]));
-                    }
-                }
+
+		//async_fbd->recv_flags[i] = 0;
+                //ParallelDescriptor::Test(recv_reqs[i], async_fbd->recv_flags[i], async_fbd->recv_stat[i]);
+                //if (async_fbd->recv_flags[i] > 0)
+                //{
+                //    for (int j = 0; j < recv_size[i]; ++j)
+                //    {
+                //        recv_data[i][j] = async_fbd->recv_data_inFlight[i][j];
+                //    }
+                //    recv_reqs[i] = ParallelDescriptor::Arecv
+                //        (async_fbd->recv_data_inFlight[i], recv_size[i], rank, SeqNum, comm).req();
+                //    async_fbd->recv_count[i]++;
+                //}
+		//else 
+		//{
+                //    async_fbd->recv_flags[i] = 0;
+                //    ParallelDescriptor::Test(async_fbd->recv_reqs_finalMsg[i], async_fbd->recv_flags[i], async_fbd->recv_stat_finalMsg[i]);
+                //    if (async_fbd->recv_flags[i] > 0)
+                //    {
+                //        for (int j = 0; j < recv_size[i]; ++j)
+                //        {
+                //            recv_data[i][j] = async_fbd->recv_data_finalMsg[i][j];
+                //        }
+                //        async_fbd->recvd_finalMsg[i] = 1;
+                //        async_fbd->recv_count[i]++;
+                //        MPI_Cancel(&(recv_reqs[i]));
+                //    }
+                //}
             }
         }
     }

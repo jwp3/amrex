@@ -42,7 +42,8 @@ public:
     Real testResNormInf (int alev, bool& comm_complete, bool local = false);
     void testInit(bool& comm_complete);
 
-    Vector<std::unique_ptr<MultiFab>> sol2;
+    Vector<std::unique_ptr<MultiFab>> cor_finest;
+    Vector<std::unique_ptr<MultiFab>> res_finest;
     Vector<std::unique_ptr<MultiFab>> cor_smooth;
     Vector<std::unique_ptr<MultiFab>> Acor;
 
@@ -51,6 +52,8 @@ public:
     MPI_Status reduce_stat;
     Real *reduce_recv;
     Real *reduce_send;
+
+    int asyncFillBoundary_count = 0;
 };
 
 }
