@@ -1479,12 +1479,12 @@ FabArray<FAB>::AsyncFillBoundary (int scomp, int ncomp, const IntVect& nghost,
 
 
 
-//    /********************************
-//     *
-//     * FillBoundary_finish()
-//     *
-//     * *****************************/
-//
+    /********************************
+     *
+     * FillBoundary_finish()
+     *
+     * *****************************/
+
 //{
 //    const FB* TheFB = async_fbd->fb;
 //    const int N_rcvs = TheFB->m_RcvTags->size();
@@ -1738,7 +1738,27 @@ FabArray<FAB>::AsyncPostSnds (Vector<char*> const&       send_data,
 
     if (count_num_sends > 0)
     {
-        pack_send_buffer_gpu_subset(*this, async_fbd->scomp, async_fbd->ncomp, send_data, send_size, async_fbd->send_cctc, async_fbd->send_flags);
+        //pack_send_buffer_gpu_subset(*this, async_fbd->scomp, async_fbd->ncomp, send_data, send_size, async_fbd->send_cctc, async_fbd->send_flags);
+	const FB& TheFB = async_fbd->fb;
+
+#ifdef AMREX_USE_GPU
+        if (Gpu::inLaunchRegion())
+        {
+#if ( defined(__CUDACC__) && (__CUDACC_VER_MAJOR__ >= 10))
+            if (Gpu::inGraphRegion()) {
+                FB_pack_send_buffer_cuda_graph(TheFB, async_fbd->scomp, async_fbd->ncomp, async_fbd->send_data, async_fbd->send_size, async_fbd->send_cctc);
+            }
+            else
+#endif
+            {
+                pack_send_buffer_gpu(*this, async_fbd->scomp, async_fbd->ncomp, async_fbd->send_data, async_fbd->send_size, async_fbd->send_cctc);
+            }
+        }
+        else
+#endif
+        {
+            pack_send_buffer_cpu(*this, async_fbd->scomp, async_fbd->ncomp, async_fbd->send_data, async_fbd->send_size, async_fbd->send_cctc);
+        }
     }
 
     for (int j = 0; j < N_snds; ++j)
@@ -1866,8 +1886,8 @@ FabArray<FAB>::AsyncPostRcvs (const MapOfCopyComTagContainers&  RcvTags,
         }
     }
 
-    //if (count_num_recvs > 0)
-    //{
+    if (count_num_recvs > 0)
+    {
         const FB* TheFB = async_fbd->fb;
         const int N_locs = TheFB->m_LocTags->size();
         if (N_locs > 0)
@@ -1895,10 +1915,32 @@ FabArray<FAB>::AsyncPostRcvs (const MapOfCopyComTagContainers&  RcvTags,
 
         //unpack_recv_buffer_gpu_subset(*this, async_fbd->scomp, async_fbd->ncomp, async_fbd->recv_data, async_fbd->recv_size,
         //                       async_fbd->recv_cctc, FabArrayBase::COPY, is_thread_safe, at_least_one_recv);
-        unpack_recv_buffer_gpu(*this, async_fbd->scomp, async_fbd->ncomp, async_fbd->recv_data, async_fbd->recv_size,
-                               async_fbd->recv_cctc, FabArrayBase::COPY, is_thread_safe);
         
-    //}
+#ifdef AMREX_USE_GPU
+        if (Gpu::inLaunchRegion())
+        {
+#if ( defined(__CUDACC__) && (__CUDACC_VER_MAJOR__ >= 10) )
+            if (Gpu::inGraphRegion())
+            {
+                FB_unpack_recv_buffer_cuda_graph(*TheFB, async_fbd->scomp, async_fbd->ncomp,
+                                                 async_fbd->recv_data, async_fbd->recv_size,
+                                                 async_fbd->recv_cctc, is_thread_safe);
+            }
+            else
+#endif
+            {
+                unpack_recv_buffer_gpu(*this, async_fbd->scomp, async_fbd->ncomp, async_fbd->recv_data, async_fbd->recv_size,
+                                       async_fbd->recv_cctc, FabArrayBase::COPY, is_thread_safe);
+            }
+        }
+        else
+#endif
+        {
+            unpack_recv_buffer_cpu(*this, async_fbd->scomp, async_fbd->ncomp, async_fbd->recv_data, async_fbd->recv_size,
+                                   async_fbd->recv_cctc, FabArrayBase::COPY, is_thread_safe);
+        }
+        
+    }
 }
 
 template <class FAB>
