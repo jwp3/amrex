@@ -447,7 +447,17 @@ MLMG::mgVcycle (int amrlev, int mglev_top)
             amrex::Print() << "AT LEVEL "  << amrlev << " " << mglev_bottom
                            << "   DN: Norm before bottom " << norm << "\n";
         }
+	/* begin JORDI section */
         bottomSolve();
+	//bool skip_fillboundary = true;
+	//int mglev = mglev_bottom;
+        //for (int i = 0; i < 100; ++i)
+        //{
+        //    linop.smooth(amrlev, mglev, *cor[amrlev][mglev], res[amrlev][mglev],
+        //                 skip_fillboundary);
+	//    skip_fillboundary = false;
+        //}
+	/* end JORDI section */
         if (verbose >= 4)
         {
             computeResOfCorrection(amrlev, mglev_bottom);

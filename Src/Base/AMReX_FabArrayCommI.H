@@ -2,6 +2,9 @@
 #include <AMReX_FBI.H>
 #include <AMReX_PCI.H>
 
+
+//TODO: handle multple amr levels.
+
 template <class FAB>
 template <class F, typename std::enable_if<IsBaseFab<F>::value,int>::type Z>
 void
@@ -1199,7 +1202,7 @@ FabArray<FAB>::FillBoundary_finish (bool& comm_complete)
 {
 #ifdef AMREX_USE_MPI
 
-    BL_PROFILE("FillBoundary_finish()");
+    BL_PROFILE("FabArray::FillBoundary_finish()");
 
     if (!fbd) { n_filled = IntVect::TheZeroVector(); comm_complete = true; return; }
 
@@ -1321,6 +1324,12 @@ FabArray<FAB>::AsyncFillBoundary (int scomp, int ncomp, const IntVect& nghost,
                                   const Periodicity& period, bool cross,
                                   bool enforce_periodicity_only)
 {
+    BL_PROFILE("FabArray::AsyncFillBoundary()");
+
+    AsyncFillBoundarySend(scomp, ncomp, nghost, period, cross, enforce_periodicity_only);
+    AsyncFillBoundaryRecv(scomp, ncomp, nghost, period, cross, enforce_periodicity_only);
+    return;
+
     /******************************** 
      * 
      * FBEP_nowait()
@@ -1409,35 +1418,32 @@ FabArray<FAB>::AsyncFillBoundary (int scomp, int ncomp, const IntVect& nghost,
     //
     char*&                          the_send_data = async_fbd->the_send_data;
     Vector<char*> &                     send_data = async_fbd->send_data;
-    Vector<std::size_t>                 send_size;
-    Vector<int>                         send_rank;
+    Vector<std::size_t>                 send_size = async_fbd->send_size;
+    Vector<int>                         send_rank = async_fbd->send_rank;
     Vector<MPI_Request>&                send_reqs = async_fbd->send_reqs;
-    Vector<const CopyComTagsContainer*> send_cctc;
+    Vector<const CopyComTagsContainer*> send_cctc = async_fbd->send_cctc;
 
 
     if (N_snds > 0)
     {
-        AsyncPrepareSendBuffers(*TheFB.m_SndTags, the_send_data, send_data, send_size, send_rank,
-                           send_reqs, send_cctc, ncomp);
-
-#ifdef AMREX_USE_GPU
-        if (Gpu::inLaunchRegion())
-        {
-#if ( defined(__CUDACC__) && (__CUDACC_VER_MAJOR__ >= 10))
-            if (Gpu::inGraphRegion()) {
-                FB_pack_send_buffer_cuda_graph(TheFB, scomp, ncomp, send_data, send_size, send_cctc);
-            }
-            else
-#endif
-            {
-                pack_send_buffer_gpu(*this, scomp, ncomp, send_data, send_size, send_cctc);
-            }
-        }
-        else
-#endif
-        {
-            pack_send_buffer_cpu(*this, scomp, ncomp, send_data, send_size, send_cctc);
-        }
+//#ifdef AMREX_USE_GPU
+//        if (Gpu::inLaunchRegion())
+//        {
+//#if ( defined(__CUDACC__) && (__CUDACC_VER_MAJOR__ >= 10))
+//            if (Gpu::inGraphRegion()) {
+//                FB_pack_send_buffer_cuda_graph(TheFB, scomp, ncomp, send_data, send_size, send_cctc);
+//            }
+//            else
+//#endif
+//            {
+//                pack_send_buffer_gpu(*this, scomp, ncomp, send_data, send_size, send_cctc);
+//            }
+//        }
+//        else
+//#endif
+//        {
+//            pack_send_buffer_cpu(*this, scomp, ncomp, send_data, send_size, send_cctc);
+//        }
 
         AMREX_ASSERT(send_reqs.size() == N_snds);
         AsyncPostSnds(send_data, send_size, send_rank, send_reqs, SeqNum);
@@ -1473,61 +1479,154 @@ FabArray<FAB>::AsyncFillBoundary (int scomp, int ncomp, const IntVect& nghost,
 
 
 
-    /********************************
-     *
-     * FillBoundary_finish()
-     *
-     * *****************************/
+//    /********************************
+//     *
+//     * FillBoundary_finish()
+//     *
+//     * *****************************/
+//
+//{
+//    const FB* TheFB = async_fbd->fb;
+//    const int N_rcvs = TheFB->m_RcvTags->size();
+//    if (N_rcvs > 0)
+//    {
+//	//ParallelDescriptor::Waitall(async_fbd->recv_reqs, async_fbd->recv_stat);
+//        bool is_thread_safe = TheFB->m_threadsafe_rcv;
+//#ifdef AMREX_USE_GPU
+//        if (Gpu::inLaunchRegion())
+//        {
+//#if ( defined(__CUDACC__) && (__CUDACC_VER_MAJOR__ >= 10) )
+//            if (Gpu::inGraphRegion())
+//            {
+//                FB_unpack_recv_buffer_cuda_graph(*TheFB, async_fbd->scomp, async_fbd->ncomp,
+//                                                 async_fbd->recv_data, async_fbd->recv_size,
+//                                                 async_fbd->recv_cctc, is_thread_safe);
+//            }
+//            else
+//#endif
+//            {
+//                unpack_recv_buffer_gpu(*this, async_fbd->scomp, async_fbd->ncomp, async_fbd->recv_data, async_fbd->recv_size,
+//                                       async_fbd->recv_cctc, FabArrayBase::COPY, is_thread_safe);
+//            }
+//        }
+//        else
+//#endif
+//        {
+//            unpack_recv_buffer_cpu(*this, async_fbd->scomp, async_fbd->ncomp, async_fbd->recv_data, async_fbd->recv_size,
+//                                   async_fbd->recv_cctc, FabArrayBase::COPY, is_thread_safe);
+//        }
+//    }
+//
+//    //ParallelDescriptor::Waitall(async_fbd->send_reqs, async_fbd->send_stat);
+//
+//}
+#endif /*BL_USE_MPI*/
+}
 
+
+template <class FAB>
+template <class F, typename std::enable_if<IsBaseFab<F>::value,int>::type Z>
+void
+FabArray<FAB>::AsyncFillBoundarySend (int scomp, int ncomp, const IntVect& nghost,
+                                      const Periodicity& period, bool cross,
+                                      bool enforce_periodicity_only)
 {
-    if (!async_fbd) { n_filled = IntVect::TheZeroVector(); return; }
+    BL_PROFILE("FabArray::AsyncFillBoundarySend()");
 
-    const FB* TheFB = async_fbd->fb;
-    const int N_rcvs = TheFB->m_RcvTags->size();
-    if (N_rcvs > 0)
+    bool work_to_do;
+    if (enforce_periodicity_only) {
+        work_to_do = period.isAnyPeriodic();
+    } else {
+        work_to_do = nghost.max() > 0;
+    }
+    if (!work_to_do) { return; }
+
+#ifdef BL_USE_MPI
+    int SeqNum = 10;//ParallelDescriptor::SeqNum();
+    async_fbd->tag = SeqNum;
+
+    AsyncPostSnds(async_fbd->send_data, async_fbd->send_size, async_fbd->send_rank, async_fbd->send_reqs, SeqNum);
+#endif /*BL_USE_MPI*/
+}
+
+
+template <class FAB>
+template <class F, typename std::enable_if<IsBaseFab<F>::value,int>::type Z>
+void
+FabArray<FAB>::AsyncFillBoundaryRecv (int scomp, int ncomp, const IntVect& nghost,
+                                      const Periodicity& period, bool cross,
+                                      bool enforce_periodicity_only)
+{
+    BL_PROFILE("FabArray::AsyncFillBoundaryRecv()");
+
+    bool work_to_do;
+    if (enforce_periodicity_only) {
+        work_to_do = period.isAnyPeriodic();
+    } else {
+        work_to_do = nghost.max() > 0;
+    }
+    if (!work_to_do) { return; }
+
+    const FB& TheFB = getFB(nghost, period, cross, enforce_periodicity_only);
+
+    if (ParallelContext::NProcsSub() == 1)
     {
-        Vector<const CopyComTagsContainer*> recv_cctc(N_rcvs,nullptr);
-        for (int k = 0; k < N_rcvs; k++)
-        {
-            if (async_fbd->recv_size[k] > 0)
-            {
-                auto const& cctc = TheFB->m_RcvTags->at(async_fbd->recv_from[k]);
-                recv_cctc[k] = &cctc;
-            }
-        }
-
-        int actual_n_rcvs = N_rcvs - std::count(async_fbd->recv_data.begin(), async_fbd->recv_data.end(), nullptr);
-
-	//ParallelDescriptor::Waitall(async_fbd->recv_reqs, async_fbd->recv_stat);
-        bool is_thread_safe = TheFB->m_threadsafe_rcv;
+        int N_locs = (*TheFB.m_LocTags).size();
+        if (N_locs == 0) return;
 #ifdef AMREX_USE_GPU
         if (Gpu::inLaunchRegion())
         {
-#if ( defined(__CUDACC__) && (__CUDACC_VER_MAJOR__ >= 10) )
+#if ( defined(__CUDACC__) && (__CUDACC_VER_MAJOR__ >= 10))
             if (Gpu::inGraphRegion())
             {
-                FB_unpack_recv_buffer_cuda_graph(*TheFB, async_fbd->scomp, async_fbd->ncomp,
-                                                 async_fbd->recv_data, async_fbd->recv_size,
-                                                 recv_cctc, is_thread_safe);
+                FB_local_copy_cuda_graph_1(TheFB, scomp, ncomp);
             }
             else
 #endif
             {
-                unpack_recv_buffer_gpu(*this, async_fbd->scomp, async_fbd->ncomp, async_fbd->recv_data, async_fbd->recv_size,
-                                       recv_cctc, FabArrayBase::COPY, is_thread_safe);
+                FB_local_copy_gpu(TheFB, scomp, ncomp);
             }
         }
         else
 #endif
         {
-            unpack_recv_buffer_cpu(*this, async_fbd->scomp, async_fbd->ncomp, async_fbd->recv_data, async_fbd->recv_size,
-                                   recv_cctc, FabArrayBase::COPY, is_thread_safe);
+            FB_local_copy_cpu(TheFB, scomp, ncomp);
         }
+
     }
 
-    //ParallelDescriptor::Waitall(async_fbd->send_reqs, async_fbd->send_stat);
+#ifdef BL_USE_MPI
 
-}
+    int SeqNum = 10;//ParallelDescriptor::SeqNum();
+
+    const int N_locs = TheFB.m_LocTags->size();
+    const int N_rcvs = TheFB.m_RcvTags->size();
+
+//    if (N_locs > 0)
+//    {
+//#ifdef AMREX_USE_GPU
+//        if (Gpu::inLaunchRegion())
+//        {
+//#if ( defined(__CUDACC__) && (__CUDACC_VER_MAJOR__ >= 10) )
+//            if (Gpu::inGraphRegion()) {
+//                FB_local_copy_cuda_graph_n(TheFB, scomp, ncomp);
+//            }
+//            else
+//#endif
+//            {
+//                FB_local_copy_gpu(TheFB, scomp, ncomp);
+//            }
+//        }
+//        else
+//#endif
+//        {
+//            FB_local_copy_cpu(TheFB, scomp, ncomp);
+//        }
+//    }
+
+    AsyncPostRcvs(*TheFB.m_RcvTags, async_fbd->the_recv_data,
+                  async_fbd->recv_data, async_fbd->recv_size, async_fbd->recv_from, async_fbd->recv_reqs,
+                  ncomp, SeqNum);
 #endif /*BL_USE_MPI*/
 }
 
@@ -1560,29 +1659,10 @@ FabArray<FAB>::AsyncPrepareSendBuffers (const MapOfCopyComTagContainers&     Snd
                                    Vector<const CopyComTagsContainer*>& send_cctc,
                                    int                                  ncomp) const
 {
-    send_size.clear();
-    send_rank.clear();
-    send_cctc.clear();
+    BL_PROFILE("FabArray::AsyncPrepareSendBuffers()");
 
     const int N_snds = SndTags.size();
-    if (N_snds == 0) return;
-
-    const int send_data_size = send_data.size();
-
-    send_size.reserve(N_snds);
-    send_rank.reserve(N_snds);
-    send_cctc.reserve(N_snds);
-
-    if (send_data_size == 0){
-        send_data.reserve(N_snds);
-        send_reqs.reserve(N_snds);
-        async_fbd->send_count.reserve(N_snds);
-        async_fbd->send_stat.reserve(N_snds);
-        async_fbd->send_finalMsg.reserve(N_snds);
-	async_fbd->send_flags.reserve(N_snds);
-    }
-
-    Vector<std::size_t> offset; offset.reserve(N_snds);
+    Vector<std::size_t> offset;
     std::size_t total_volume = 0;
     for (auto const& kv : SndTags)
     {
@@ -1609,30 +1689,24 @@ FabArray<FAB>::AsyncPrepareSendBuffers (const MapOfCopyComTagContainers&     Snd
         send_size.push_back(nbytes);
         send_rank.push_back(kv.first);
         send_cctc.push_back(&cctc);
-
-        if (send_data_size == 0){
-            send_data.push_back(nullptr);
-            send_reqs.push_back(MPI_REQUEST_NULL);
-            async_fbd->send_count.push_back(0);
-            async_fbd->send_finalMsg.push_back(0);
-	    async_fbd->send_flags.push_back(0);
-        }
+        send_data.push_back(nullptr);
+        send_reqs.push_back(MPI_REQUEST_NULL);
+        async_fbd->send_count.push_back(0);
+        async_fbd->send_finalMsg.push_back(0);
+        async_fbd->send_flags.push_back(0);
     }
 
     int nsend = send_data.size(); 
     async_fbd->send_stat.resize(nsend);
 
-    if (send_data_size == 0)
+    if (total_volume > 0)
     {
-       if (total_volume > 0)
-       {
-           the_send_data = static_cast<char*>(amrex::The_FA_Arena()->alloc(total_volume));
-           for (int i = 0, N = send_size.size(); i < N; ++i) {
-               send_data[i] = the_send_data + offset[i];
-           }
-       } else {
-           the_send_data = nullptr;
-       }
+        the_send_data = static_cast<char*>(amrex::The_FA_Arena()->alloc(total_volume));
+        for (int i = 0, N = send_size.size(); i < N; ++i) {
+            send_data[i] = the_send_data + offset[i];
+        }
+    } else {
+        the_send_data = nullptr;
     }
 }
 
@@ -1645,9 +1719,11 @@ FabArray<FAB>::AsyncPostSnds (Vector<char*> const&       send_data,
                               Vector<MPI_Request>&       send_reqs,
                               int                        SeqNum) const
 {
+    BL_PROFILE("FabArray::AsyncPostSnds()");
     MPI_Comm comm = ParallelContext::CommunicatorSub();
 
     const int N_snds = send_data.size();
+    int count_num_sends = 0;
     for (int j = 0; j < N_snds; ++j)
     {
         if (async_fbd->send_finalMsg[j] <= 1)
@@ -1655,13 +1731,28 @@ FabArray<FAB>::AsyncPostSnds (Vector<char*> const&       send_data,
             async_fbd->send_flags[j] = 0;
             ParallelDescriptor::Test(send_reqs[j], async_fbd->send_flags[j], async_fbd->send_stat[j]);
             if (async_fbd->send_flags[j] > 0) {
-                int async_send_tag; 
+                count_num_sends++;
+            }
+        }
+    }
+
+    if (count_num_sends > 0)
+    {
+        pack_send_buffer_gpu_subset(*this, async_fbd->scomp, async_fbd->ncomp, send_data, send_size, async_fbd->send_cctc, async_fbd->send_flags);
+    }
+
+    for (int j = 0; j < N_snds; ++j)
+    {
+        if (async_fbd->send_finalMsg[j] <= 1)
+        {
+            if (async_fbd->send_flags[j] > 0) {
+                int async_send_tag;
                 if (async_fbd->send_finalMsg[j] == 1)
                 {
                    async_send_tag = SeqNum+1;
                    async_fbd->send_finalMsg[j] = 2;
                 }
-                else 
+                else
                 {
                    async_send_tag = SeqNum;
                 }
@@ -1681,7 +1772,7 @@ TheFaArenaPointer FabArray<FAB>::AsyncPostRcvs (const MapOfCopyComTagContainers&
                    Vector<int>&                           recv_from,
                    Vector<MPI_Request>&                   recv_reqs,
                    int                                    ncomp,
-                   int                                    SeqNum) const
+                   int                                    SeqNum)
 {
     char* pointer = nullptr;
     AsyncPostRcvs(RcvTags, pointer, recv_data, recv_size, recv_from, recv_reqs, ncomp, SeqNum);
@@ -1697,158 +1788,117 @@ FabArray<FAB>::AsyncPostRcvs (const MapOfCopyComTagContainers&  RcvTags,
                          Vector<int>&                      recv_from,
                          Vector<MPI_Request>&              recv_reqs,
                          int                               ncomp,
-                         int                               SeqNum) const
+                         int                               SeqNum)
 {
-    recv_size.clear();
-    recv_from.clear();
+    BL_PROFILE("FabArray::AsyncPostRcvs()");
 
-    Vector<std::size_t> offset;
-    std::size_t TotalRcvsVolume = 0;
-    for (const auto& kv : RcvTags) // loop over senders
+    int nrecv = recv_data.size();
+    MPI_Comm comm = ParallelContext::CommunicatorSub();
+    int count_num_recvs = 0;
+
+    Vector<int> at_least_one_recv(nrecv, 0);
+    for (int i = 0; i < nrecv; ++i)
     {
-        std::size_t nbytes = 0;
-        for (auto const& cct : kv.second)
+        if (async_fbd->recvd_finalMsg[i] == 0)
         {
-            nbytes += (*this)[cct.dstIndex].nBytes(cct.dbox,ncomp);
-        }
-
-        std::size_t acd = ParallelDescriptor::alignof_comm_data(nbytes);
-        nbytes = amrex::aligned_size(acd, nbytes);  // so that nbytes are aligned
-
-        // Also need to align the offset properly
-        TotalRcvsVolume = amrex::aligned_size(std::max(alignof(typename FAB::value_type),acd),
-                                              TotalRcvsVolume);
-
-        offset.push_back(TotalRcvsVolume);
-        TotalRcvsVolume += nbytes;
-
-        recv_size.push_back(nbytes);
-        recv_from.push_back(kv.first);
-    }
-
-    if (TotalRcvsVolume == 0)
-    {
-        the_recv_data = nullptr;
-    }
-    else
-    {
-        int nrecv = recv_data.size();
-        MPI_Comm comm = ParallelContext::CommunicatorSub();
-
-        if (nrecv == 0){
-            for (const auto& kv : RcvTags) // loop over senders
-            {
-                recv_data.push_back(nullptr);
-                recv_reqs.push_back(MPI_REQUEST_NULL);
-                async_fbd->recv_data_inFlight.push_back(nullptr);
-                async_fbd->recv_data_finalMsg.push_back(nullptr);
-                async_fbd->recv_flags.push_back(0);
-                async_fbd->recvd_finalMsg.push_back(0);
-                async_fbd->recv_count.push_back(-1);
-                async_fbd->recv_reqs_finalMsg.push_back(MPI_REQUEST_NULL);
+            const int rank = ParallelContext::global_to_local_rank(recv_from[i]);
+            if (async_fbd->recv_count[i] == -1){
+               recv_reqs[i] = ParallelDescriptor::Arecv
+                   (async_fbd->recv_data_inFlight[i], recv_size[i], rank, SeqNum, comm).req();
+               async_fbd->recv_reqs_finalMsg[i] = ParallelDescriptor::Arecv
+                   (async_fbd->recv_data_finalMsg[i], recv_size[i], rank, SeqNum+1, comm).req();
+               async_fbd->recv_count[i] = 0;
             }
 
-            nrecv = recv_data.size();
-            async_fbd->recv_stat.resize(nrecv);
-	    async_fbd->recv_stat_finalMsg.resize(nrecv);
-
-            the_recv_data = static_cast<char*>(amrex::The_FA_Arena()->alloc(TotalRcvsVolume));
-            for (int i = 0; i < nrecv; ++i)
+            while (1)
             {
-                the_recv_data[i] = 0.0;
-            }
-
-            for (int i = 0; i < nrecv; ++i)
-            {
-		async_fbd->recv_data[i] = the_recv_data + offset[i];
-                async_fbd->recv_data_inFlight[i] = the_recv_data + offset[i];
-                async_fbd->recv_data_finalMsg[i] = the_recv_data + offset[i];
-
-		for (int j = 0; j < recv_size[i]; ++j)
-                {
-                    recv_data[i][j] = 0.0;
-		    async_fbd->recv_data_inFlight[i][j] = 0.0;
-		    async_fbd->recv_data_finalMsg[i][j] = 0.0;
-                }
-            }
-        }
-
-
-        for (int i = 0; i < nrecv; ++i)
-        {
-            if (async_fbd->recvd_finalMsg[i] == 0)
-	    {
-	        const int rank = ParallelContext::global_to_local_rank(recv_from[i]);
-                if (async_fbd->recv_count[i] == -1){
-                   recv_reqs[i] = ParallelDescriptor::Arecv
-                       (async_fbd->recv_data_inFlight[i], recv_size[i], rank, SeqNum, comm).req();
-                   async_fbd->recv_reqs_finalMsg[i] = ParallelDescriptor::Arecv
-                       (async_fbd->recv_data_finalMsg[i], recv_size[i], rank, SeqNum+1, comm).req();
-                   async_fbd->recv_count[i] = 0;
-                }
-
-	        while (1)
-	        {
-	            async_fbd->recv_flags[i] = 0;
-                    ParallelDescriptor::Test(recv_reqs[i], async_fbd->recv_flags[i], async_fbd->recv_stat[i]);
-                    if (async_fbd->recv_flags[i] > 0)
-                    {
-			for (int j = 0; j < recv_size[i]; ++j)
-                        {
-                            recv_data[i][j] = async_fbd->recv_data_inFlight[i][j];
-			}
-                        recv_reqs[i] = ParallelDescriptor::Arecv
-                            (async_fbd->recv_data_inFlight[i], recv_size[i], rank, SeqNum, comm).req();
-                        async_fbd->recv_count[i]++;
-                    }
-	            else {
-                        break;
-                    }
-	        }
-		
-		async_fbd->recv_flags[i] = 0;
-                ParallelDescriptor::Test(async_fbd->recv_reqs_finalMsg[i], async_fbd->recv_flags[i], async_fbd->recv_stat_finalMsg[i]);
+                async_fbd->recv_flags[i] = 0;
+                ParallelDescriptor::Test(recv_reqs[i], async_fbd->recv_flags[i], async_fbd->recv_stat[i]);
                 if (async_fbd->recv_flags[i] > 0)
                 {
-                    for (int j = 0; j < recv_size[i]; ++j)
-                    {
-                        recv_data[i][j] = async_fbd->recv_data_finalMsg[i][j];
-                    }
-                    async_fbd->recvd_finalMsg[i] = 1;
+		    recv_data[i] = async_fbd->recv_data_inFlight[i];
+                    recv_reqs[i] = ParallelDescriptor::Arecv
+                        (async_fbd->recv_data_inFlight[i], recv_size[i], rank, SeqNum, comm).req();
                     async_fbd->recv_count[i]++;
-                    MPI_Cancel(&(recv_reqs[i]));
-                }
 
-		//async_fbd->recv_flags[i] = 0;
-                //ParallelDescriptor::Test(recv_reqs[i], async_fbd->recv_flags[i], async_fbd->recv_stat[i]);
-                //if (async_fbd->recv_flags[i] > 0)
-                //{
-                //    for (int j = 0; j < recv_size[i]; ++j)
-                //    {
-                //        recv_data[i][j] = async_fbd->recv_data_inFlight[i][j];
-                //    }
-                //    recv_reqs[i] = ParallelDescriptor::Arecv
-                //        (async_fbd->recv_data_inFlight[i], recv_size[i], rank, SeqNum, comm).req();
-                //    async_fbd->recv_count[i]++;
-                //}
-		//else 
-		//{
-                //    async_fbd->recv_flags[i] = 0;
-                //    ParallelDescriptor::Test(async_fbd->recv_reqs_finalMsg[i], async_fbd->recv_flags[i], async_fbd->recv_stat_finalMsg[i]);
-                //    if (async_fbd->recv_flags[i] > 0)
-                //    {
-                //        for (int j = 0; j < recv_size[i]; ++j)
-                //        {
-                //            recv_data[i][j] = async_fbd->recv_data_finalMsg[i][j];
-                //        }
-                //        async_fbd->recvd_finalMsg[i] = 1;
-                //        async_fbd->recv_count[i]++;
-                //        MPI_Cancel(&(recv_reqs[i]));
-                //    }
-                //}
+		    at_least_one_recv[i] = 1;
+		    count_num_recvs++;
+                }
+                else {
+                    break;
+                }
             }
+    	
+            async_fbd->recv_flags[i] = 0;
+            ParallelDescriptor::Test(async_fbd->recv_reqs_finalMsg[i], async_fbd->recv_flags[i], async_fbd->recv_stat_finalMsg[i]);
+            if (async_fbd->recv_flags[i] > 0)
+            {
+		recv_data[i] = async_fbd->recv_data_finalMsg[i];
+                async_fbd->recvd_finalMsg[i] = 1;
+                async_fbd->recv_count[i]++;
+                MPI_Cancel(&(recv_reqs[i]));
+
+		at_least_one_recv[i] = 1;
+		count_num_recvs++;
+            }
+
+            //async_fbd->recv_flags[i] = 0;
+            //ParallelDescriptor::Test(recv_reqs[i], async_fbd->recv_flags[i], async_fbd->recv_stat[i]);
+            //if (async_fbd->recv_flags[i] > 0)
+            //{
+	    //    recv_data[i] = async_fbd->recv_data_inFlight[i];
+            //    recv_reqs[i] = ParallelDescriptor::Arecv
+            //        (async_fbd->recv_data_inFlight[i], recv_size[i], rank, SeqNum, comm).req();
+            //    async_fbd->recv_count[i]++;
+            //}
+    	    //else 
+    	    //{
+            //    async_fbd->recv_flags[i] = 0;
+            //    ParallelDescriptor::Test(async_fbd->recv_reqs_finalMsg[i], async_fbd->recv_flags[i], async_fbd->recv_stat_finalMsg[i]);
+            //    if (async_fbd->recv_flags[i] > 0)
+            //    {
+	    //        recv_data[i] = async_fbd->recv_data_finalMsg[i];
+            //        async_fbd->recvd_finalMsg[i] = 1;
+            //        async_fbd->recv_count[i]++;
+            //        MPI_Cancel(&(recv_reqs[i]));
+            //    }
+            //}
         }
     }
+
+    //if (count_num_recvs > 0)
+    //{
+        const FB* TheFB = async_fbd->fb;
+        const int N_locs = TheFB->m_LocTags->size();
+        if (N_locs > 0)
+        {
+#ifdef AMREX_USE_GPU
+            if (Gpu::inLaunchRegion())
+            {
+#if ( defined(__CUDACC__) && (__CUDACC_VER_MAJOR__ >= 10) )
+                if (Gpu::inGraphRegion()) {
+                    FB_local_copy_cuda_graph_n(*TheFB, async_fbd->scomp, async_fbd->ncomp);
+                }
+                else
+#endif
+                {
+                    FB_local_copy_gpu(*TheFB, async_fbd->scomp, async_fbd->ncomp);
+                }
+            }
+            else
+#endif
+            {
+                FB_local_copy_cpu(*TheFB, async_fbd->scomp, async_fbd->ncomp);
+            }
+        }
+        bool is_thread_safe = TheFB->m_threadsafe_rcv;
+
+        //unpack_recv_buffer_gpu_subset(*this, async_fbd->scomp, async_fbd->ncomp, async_fbd->recv_data, async_fbd->recv_size,
+        //                       async_fbd->recv_cctc, FabArrayBase::COPY, is_thread_safe, at_least_one_recv);
+        unpack_recv_buffer_gpu(*this, async_fbd->scomp, async_fbd->ncomp, async_fbd->recv_data, async_fbd->recv_size,
+                               async_fbd->recv_cctc, FabArrayBase::COPY, is_thread_safe);
+        
+    //}
 }
 
 template <class FAB>
@@ -1957,7 +2007,7 @@ FabArray<FAB>::AsyncCheckConverge (int extern_converge,
 
 template <class FAB>
 void
-FabArray<FAB>::AsyncClearMem ()
+FabArray<FAB>::AsyncClearAllBuffers ()
 {
    async_fbd->recv_flags.clear();
    async_fbd->send_flags.clear();
@@ -1978,7 +2028,14 @@ FabArray<FAB>::AsyncClearMem ()
    async_fbd->send_finalMsg.clear();
 
    async_fbd->recv_size.clear();
+   async_fbd->send_size.clear();
+
    async_fbd->recv_from.clear();
+   async_fbd->send_rank.clear();
+
+   async_fbd->recv_cctc.clear();
+   async_fbd->send_cctc.clear();
+
    async_fbd->recv_data_inFlight.clear();
    async_fbd->recv_data_finalMsg.clear();
    async_fbd->recv_stat_finalMsg.clear();
@@ -1998,11 +2055,96 @@ FabArray<FAB>::AsyncClearMem ()
 
 template <class FAB>
 void
-FabArray<FAB>::AsyncSetup ()
+FabArray<FAB>::AsyncSetup (int scomp, int ncomp, const IntVect& nghost,
+                           const Periodicity& period, bool cross,
+                           bool enforce_periodicity_only)
 {
 #ifdef BL_USE_MPI
    async_fbd = new FBData<FAB>();
-   AsyncClearMem();
+   AsyncClearAllBuffers();
+
+
+
+   const FB& TheFB = getFB(nghost, period, cross, enforce_periodicity_only);
+   const MapOfCopyComTagContainers& RcvTags = *TheFB.m_RcvTags;
+   Vector<std::size_t> offset;
+   std::size_t TotalRcvsVolume = 0;
+   for (const auto& kv : RcvTags)
+   {
+       std::size_t nbytes = 0;
+       for (auto const& cct : kv.second)
+       {
+           nbytes += (*this)[cct.dstIndex].nBytes(cct.dbox,ncomp);
+       }
+
+       std::size_t acd = ParallelDescriptor::alignof_comm_data(nbytes);
+       nbytes = amrex::aligned_size(acd, nbytes);
+
+       TotalRcvsVolume = amrex::aligned_size(std::max(alignof(typename FAB::value_type),acd),
+                                             TotalRcvsVolume);
+
+       offset.push_back(TotalRcvsVolume);
+       TotalRcvsVolume += nbytes;
+
+       async_fbd->recv_size.push_back(nbytes);
+       async_fbd->recv_from.push_back(kv.first);
+
+       async_fbd->recv_data.push_back(nullptr);
+       async_fbd->recv_reqs.push_back(MPI_REQUEST_NULL);
+       async_fbd->recv_data_inFlight.push_back(nullptr);
+       async_fbd->recv_data_finalMsg.push_back(nullptr);
+       async_fbd->recv_flags.push_back(0);
+       async_fbd->recvd_finalMsg.push_back(0);
+       async_fbd->recv_count.push_back(-1);
+       async_fbd->recv_reqs_finalMsg.push_back(MPI_REQUEST_NULL);
+       async_fbd->recv_cctc.push_back(nullptr);
+   }
+
+   const int N_rcvs = TheFB.m_RcvTags->size();
+   for (int k = 0; k < N_rcvs; k++)
+   {
+       if (async_fbd->recv_size[k] > 0)
+       {
+           auto const& cctc = TheFB.m_RcvTags->at(async_fbd->recv_from[k]);
+           async_fbd->recv_cctc[k] = &cctc;
+       }
+   }
+
+   int nrecv = async_fbd->recv_data.size();
+   async_fbd->recv_stat.resize(nrecv);
+   async_fbd->recv_stat_finalMsg.resize(nrecv);
+
+   async_fbd->the_recv_data = static_cast<char*>(amrex::The_FA_Arena()->alloc(TotalRcvsVolume));
+   for (int i = 0; i < nrecv; ++i)
+   {
+       async_fbd->the_recv_data[i] = 0.0;
+   }
+
+   for (int i = 0; i < nrecv; ++i)
+   {
+       async_fbd->recv_data[i] = async_fbd->the_recv_data + offset[i];
+       async_fbd->recv_data_inFlight[i] = async_fbd->the_recv_data + offset[i];
+       async_fbd->recv_data_finalMsg[i] = async_fbd->the_recv_data + offset[i];
+
+       for (int j = 0; j < async_fbd->recv_size[i]; ++j)
+       {
+           async_fbd->recv_data[i][j] = 0.0;
+           async_fbd->recv_data_inFlight[i][j] = 0.0;
+           async_fbd->recv_data_finalMsg[i][j] = 0.0;
+       }
+   }
+
+   AsyncPrepareSendBuffers(*TheFB.m_SndTags, async_fbd->the_send_data, async_fbd->send_data, async_fbd->send_size, async_fbd->send_rank,
+                           async_fbd->send_reqs, async_fbd->send_cctc, ncomp);
+
+
+   async_fbd->fb = &TheFB;
+   async_fbd->scomp = scomp;
+   async_fbd->ncomp = ncomp;
+   async_fbd->nghost = nghost;
+   async_fbd->period = period;
+   async_fbd->cross = cross;
+   async_fbd->epo = enforce_periodicity_only;
 #endif
 }
 
@@ -2024,25 +2166,7 @@ FabArray<FAB>::AsyncCleanup (int scomp, int ncomp, const IntVect& nghost,
            AsyncPostRcvs(*TheFB.m_RcvTags, async_fbd->the_recv_data,
                          async_fbd->recv_data, async_fbd->recv_size, async_fbd->recv_from, async_fbd->recv_reqs,
                          ncomp, SeqNum);
-           //all_final_sent_msgs_complete = 1;
-           //for (int j = 0; j < N_snds; ++j)
-           //{
-           //    if (async_fbd->send_finalMsg[j] == 2)
-           //    {
-           //        async_fbd->send_flags[j] = 0;
-           //        ParallelDescriptor::Test(async_fbd->send_reqs[j], async_fbd->send_flags[j], async_fbd->send_stat[j]);
-           //        if (async_fbd->send_flags[j] > 0)
-           //        {
-           //            async_fbd->send_finalMsg[j] = 3;
-           //        }
-           //        else
-           //        {
-           //           all_final_sent_msgs_complete = 0;
-           //        }
-           //    }
-           //}
-
-           if (AsyncCheckRecvConverge()/* && all_final_sent_msgs_complete*/)
+           if (AsyncCheckRecvConverge())
            {
                break;
            }
@@ -2059,7 +2183,7 @@ FabArray<FAB>::AsyncCleanup (int scomp, int ncomp, const IntVect& nghost,
    //for (int j = 0; j < N_rcvs; ++j) printf("%d %d\n", async_fbd->recv_count[j], async_fbd->send_count[j]);
    //for (int j = 0; j < N_snds; ++j) printf("%d\n", async_fbd->send_count[j]);
 
-   AsyncClearMem();
+   AsyncClearAllBuffers();
    delete async_fbd;
 #endif
 }

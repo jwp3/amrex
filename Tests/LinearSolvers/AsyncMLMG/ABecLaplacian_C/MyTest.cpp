@@ -68,6 +68,8 @@ MyTest::solvePoisson ()
         mlmg.setMaxFmgIter(max_fmg_iter);
         mlmg.setVerbose(verbose);
         mlmg.setBottomVerbose(bottom_verbose);
+	mlmg.setPreSmooth(nu1);
+	mlmg.setPostSmooth(nu2);
 #ifdef AMREX_USE_HYPRE
         if (use_hypre) {
             mlmg.setBottomSolver(MLMG::BottomSolver::hypre);
@@ -116,6 +118,8 @@ MyTest::solvePoisson ()
             mlmg.setMaxFmgIter(max_fmg_iter);
             mlmg.setVerbose(verbose);
             mlmg.setBottomVerbose(bottom_verbose);
+	    mlmg.setPreSmooth(nu1);
+            mlmg.setPostSmooth(nu2);
 #ifdef AMREX_USE_HYPRE
             if (use_hypre) {
                 mlmg.setBottomSolver(MLMG::BottomSolver::hypre);
@@ -447,6 +451,13 @@ MyTest::readParameters ()
     pp.query("semicoarsening", semicoarsening);
     pp.query("max_coarsening_level", max_coarsening_level);
     pp.query("max_semicoarsening_level", max_semicoarsening_level);
+
+    pp.query("nu", nu);
+    nu1 = nu;
+    nu2 = nu;
+
+    pp.query("nu1", nu1);
+    pp.query("nu2", nu2);
 
 #ifdef AMREX_USE_HYPRE
     pp.query("use_hypre", use_hypre);

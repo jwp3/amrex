@@ -63,6 +63,40 @@ namespace detail {
         }
     }
 
+    /* begin JORDI section */
+    template<typename T>
+    inline void Ireduce (ReduceOp op, T* v, int cnt, int root, MPI_Comm comm, MPI_Request *req)
+    {
+        auto mpi_op = mpi_ops[static_cast<int>(op)];
+        Vector<T> tmp(v, v+cnt);
+        if (root == -1) {
+            // TODO: add BL_COMM_PROFILE commands
+            MPI_Iallreduce(tmp.data(), v, cnt, ParallelDescriptor::Mpi_typemap<T>::type(),
+                           mpi_op, comm, req);
+        } else {
+            // TODO: add BL_COMM_PROFILE commands
+            MPI_Ireduce(tmp.data(), v, cnt, ParallelDescriptor::Mpi_typemap<T>::type(),
+                        mpi_op, root, comm, req);
+        }
+    }
+
+    template<typename T>
+    inline void Ireduce (ReduceOp op, T& v, int root, MPI_Comm comm, MPI_Request *req) {
+        Ireduce(op, &v, 1, root, comm, req);
+    }
+
+    template<typename T>
+    inline void Ireduce (ReduceOp op, Vector<std::reference_wrapper<T> > const & v,
+                        int root, MPI_Comm comm, MPI_Request *req)
+    {
+        Vector<T> sndrcv(std::begin(v), std::end(v));
+        Ireduce(op, sndrcv.data(), v.size(), root, comm, req);
+        for (int i = 0; i < v.size(); ++i) {
+            v[i].get() = sndrcv[i];
+        }
+    }
+    /* end JORDI section */
+
     template<typename T>
     inline void Gather (const T* v, int cnt, T* vs, int root, MPI_Comm comm)
     {
@@ -170,6 +204,60 @@ namespace ParallelAllReduce {
         detail::Reduce(detail::ReduceOp::land, iv, -1, comm);
         v = static_cast<bool>(iv);
     }
+
+
+    /* begin JORDI section */
+    template<typename T>
+    void Imax (T& v, MPI_Comm comm, MPI_Request *req) {
+        detail::Ireduce(detail::ReduceOp::max, v, -1, comm, req);
+    }
+    template<typename T>
+    void Imax (T* v, int cnt, MPI_Comm comm, MPI_Request *req) {
+        detail::Ireduce(detail::ReduceOp::max, v, cnt, -1, comm, req);
+    }
+    template<typename T>
+    void Imax (Vector<std::reference_wrapper<T> > v, MPI_Comm comm, MPI_Request *req) {
+        detail::Ireduce<T>(detail::ReduceOp::max, v, -1, comm, req);
+    }
+
+    template<typename T>
+    void Imin (T& v, MPI_Comm comm, MPI_Request *req) {
+        detail::Ireduce(detail::ReduceOp::min, v, -1, comm, req);
+    }
+    template<typename T>
+    void Imin (T* v, int cnt, MPI_Comm comm, MPI_Request *req) {
+        detail::Ireduce(detail::ReduceOp::min, v, cnt, -1, comm, req);
+    }
+    template<typename T>
+    void Imin (Vector<std::reference_wrapper<T> > v, MPI_Comm comm, MPI_Request *req) {
+        detail::Ireduce<T>(detail::ReduceOp::min, v, -1, comm, req);
+    }
+
+    template<typename T>
+    void Isum (T& v, MPI_Comm comm, MPI_Request *req) {
+        detail::Ireduce(detail::ReduceOp::sum, v, -1, comm, req);
+    }
+    template<typename T>
+    void Isum (T* v, int cnt, MPI_Comm comm, MPI_Request *req) {
+        detail::Ireduce(detail::ReduceOp::sum, v, cnt, -1, comm, req);
+    }
+    template<typename T>
+    void Isum (Vector<std::reference_wrapper<T> > v, MPI_Comm comm, MPI_Request *req) {
+        detail::Ireduce<T>(detail::ReduceOp::sum, v, -1, comm, req);
+    }
+
+    inline void Ior (bool & v, MPI_Comm comm, MPI_Request *req) {
+        auto iv = static_cast<int>(v);
+        detail::Ireduce(detail::ReduceOp::lor, iv, -1, comm, req);
+        v = static_cast<bool>(iv);
+    }
+
+    inline void Iand (bool & v, MPI_Comm comm, MPI_Request *req) {
+        auto iv = static_cast<int>(v);
+        detail::Ireduce(detail::ReduceOp::land, iv, -1, comm, req);
+        v = static_cast<bool>(iv);
+    }
+    /* end JORDI section */
 }
 
 namespace ParallelReduce {

@@ -53,6 +53,9 @@ private:
     bool use_hypre = false;
     bool use_petsc = false;
     bool use_async_solver = false;
+    int nu = 2;
+    int nu1 = 2;
+    int nu2 = 2;
 
 #ifdef AMREX_USE_HYPRE
     int hypre_interface_i = 1;  // 1. structed, 2. semi-structed, 3. ij

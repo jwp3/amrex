@@ -181,11 +181,16 @@ struct FBData {
     Vector<int> recvd_finalMsg;
     Vector<MPI_Request> recv_reqs_finalMsg;
     Vector<MPI_Status>  recv_stat_finalMsg;
+    Vector<const FabArrayBase::CopyComTagsContainer*> recv_cctc;
 
     Vector<int> send_flags;
     Vector<int> send_count;
     Vector<MPI_Status> send_stat;
     Vector<int> send_finalMsg;
+    Vector<std::size_t> send_size;
+    Vector<int> send_rank;
+    Vector<const FabArrayBase::CopyComTagsContainer*> send_cctc;
+
     /* end JORDI section */
 };
 
@@ -842,8 +847,24 @@ public:
                             const Periodicity& period,
                             bool cross,
                             bool enforce_periodicity_only = false);
-    void AsyncSetup ();
-    void AsyncClearMem ();
+    template <class F=FAB, typename std::enable_if<IsBaseFab<F>::value,int>::type = 0>
+    void AsyncFillBoundarySend (int scomp,
+                                int ncomp,
+                                const IntVect& nghost,
+                                const Periodicity& period,
+                                bool cross,
+                                bool enforce_periodicity_only = false);
+    template <class F=FAB, typename std::enable_if<IsBaseFab<F>::value,int>::type = 0>
+    void AsyncFillBoundaryRecv (int scomp,
+                                int ncomp,
+                                const IntVect& nghost,
+                                const Periodicity& period,
+                                bool cross,
+                                bool enforce_periodicity_only = false);
+    void AsyncSetup (int scomp, int ncomp, const IntVect& nghost,
+                     const Periodicity& period, bool cross,
+                     bool enforce_periodicity_only = false);
+    void AsyncClearAllBuffers ();
     void AsyncCleanup (int scomp, int ncomp, const IntVect& nghost,
                        const Periodicity& period, bool cross,
                        bool enforce_periodicity_only = false);
@@ -943,6 +964,20 @@ public:
                                         Vector<std::size_t> const& recv_size,
                                         Vector<const CopyComTagsContainer*> const& recv_cctc,
                                         CpOp op, bool is_thread_safe);
+
+    /* begin JORDI section */
+    static void pack_send_buffer_gpu_subset (FabArray<FAB> const& src, int scomp, int ncomp,
+                                             Vector<char*> const& send_data,
+                                             Vector<std::size_t> const& send_size,
+                                             Vector<CopyComTagsContainer const*> const& send_cctc,
+                                             Vector<int> send_flags);
+    static void unpack_recv_buffer_gpu_subset (FabArray<FAB>& dst, int dcomp, int ncomp,
+                                               Vector<char*> const& recv_data,
+                                               Vector<std::size_t> const& recv_size,
+                                               Vector<CopyComTagsContainer const*> const& recv_cctc,
+                                               CpOp op, bool is_thread_safe,
+                                               Vector<int> recv_flags);
+    /* end JORDI section */
 
 #endif
 
@@ -1106,7 +1141,7 @@ public:
                    Vector<int>&                           recv_from,
                    Vector<MPI_Request>&                   recv_reqs,
                    int                                    ncomp,
-                   int                                    SeqNum) const;
+                   int                                    SeqNum);
 
     AMREX_NODISCARD TheFaArenaPointer AsyncPostRcvs (const MapOfCopyComTagContainers&       RcvTags,
                    Vector<char*>&                         recv_data,
@@ -1114,7 +1149,7 @@ public:
                    Vector<int>&                           recv_from,
                    Vector<MPI_Request>&                   recv_reqs,
                    int                                    ncomp,
-                   int                                    SeqNum) const;
+                   int                                    SeqNum);
 
     AMREX_NODISCARD TheFaArenaPointer AsyncPrepareSendBuffers (const MapOfCopyComTagContainers&     SndTags,
                                        Vector<char*>&                       send_data,

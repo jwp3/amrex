@@ -53,7 +53,11 @@ public:
     Real *reduce_recv;
     Real *reduce_send;
 
+    int asyncRelax_count = 0;
     int asyncFillBoundary_count = 0;
+    int asyncFillBoundaryRecv_count = 0;
+    int asyncFillBoundarySend_count = 0;
+    int redblack_track;
 };
 
 }

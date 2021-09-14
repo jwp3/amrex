@@ -1172,6 +1172,182 @@ FabArray<FAB>::unpack_recv_buffer_cpu (FabArray<FAB>& dst, int dcomp, int ncomp,
     }
 }
 
+
+
+
+
+
+
+
+
+
+
+
+/*********************************************
+ *
+ *           begin JORDI section
+ *
+ *********************************************/
+
+template <class FAB>
+void
+FabArray<FAB>::pack_send_buffer_gpu_subset (FabArray<FAB> const& src, int scomp, int ncomp,
+                                            Vector<char*> const& send_data,
+                                            Vector<std::size_t> const& send_size,
+                                            Vector<CopyComTagsContainer const*> const& send_cctc,
+				            Vector<int> send_flags)
+{
+    amrex::ignore_unused(send_size);
+
+    const int N_snds = send_data.size();
+    if (N_snds == 0) return;
+
+    char* pbuffer = send_data[0];
+    std::size_t szbuffer = 0;
+
+    typedef Array4CopyTag<value_type> TagType;
+    Vector<TagType> snd_copy_tags;
+    for (int j = 0; j < N_snds; ++j)
+    {
+        if (send_size[j] > 0)
+        {
+            if (send_flags[j]){
+                std::size_t offset = send_data[j]-send_data[0];
+                char* dptr = pbuffer + offset;
+                auto const& cctc = *send_cctc[j];
+                for (auto const& tag : cctc)
+                {
+                    snd_copy_tags.emplace_back(TagType{
+                        amrex::makeArray4((value_type*)(dptr), tag.sbox, ncomp),
+                        src.array(tag.srcIndex),
+                        tag.sbox,
+                        Dim3{0,0,0}
+                    });
+                    dptr += (tag.sbox.numPts() * ncomp * sizeof(value_type));
+                }
+	        BL_ASSERT(dptr <= pbuffer + offset + send_size[j]);
+            }
+        }
+    }
+
+    detail::fab_to_fab<value_type>(snd_copy_tags, scomp, 0, ncomp,
+                                   detail::CellStore<value_type>());
+
+    // There is Gpu::synchronize in fab_to_fab.
+
+    if (pbuffer != send_data[0]) {
+        Gpu::copyAsync(Gpu::deviceToHost,pbuffer,pbuffer+szbuffer,send_data[0]);
+        Gpu::synchronize();
+        The_Arena()->free(pbuffer);
+    }
+}
+
+
+template <class FAB>
+void
+FabArray<FAB>::unpack_recv_buffer_gpu_subset (FabArray<FAB>& dst, int dcomp, int ncomp,
+                                              Vector<char*> const& recv_data,
+                                              Vector<std::size_t> const& recv_size,
+                                              Vector<CopyComTagsContainer const*> const& recv_cctc,
+                                              CpOp op, bool is_thread_safe,
+				              Vector<int> recv_flags)
+{
+    amrex::ignore_unused(recv_size);
+
+    const int N_rcvs = recv_cctc.size();
+    if (N_rcvs == 0) return;
+
+    char* pbuffer = recv_data[0];
+
+    typedef Array4CopyTag<value_type> TagType;
+    Vector<TagType> recv_copy_tags;
+    recv_copy_tags.reserve(N_rcvs);
+
+    Vector<BaseFab<int> > maskfabs;
+    Vector<Array4<int> > masks;
+    if (!is_thread_safe)
+    {
+        if ((op == FabArrayBase::COPY && !amrex::IsStoreAtomic<value_type>::value) ||
+            (op == FabArrayBase::ADD  && !amrex::HasAtomicAdd <value_type>::value))
+        {
+            maskfabs.resize(dst.local_size());
+        }
+    }
+
+    for (int k = 0; k < N_rcvs; ++k)
+    {
+        if (recv_size[k] > 0)
+        {
+            if (recv_flags[k] > 0){
+                std::size_t offset = recv_data[k]-recv_data[0];
+                const char* dptr = pbuffer + offset;
+                auto const& cctc = *recv_cctc[k];
+                for (auto const& tag : cctc)
+                {
+                    const int li = dst.localindex(tag.dstIndex);
+                    recv_copy_tags.emplace_back(TagType{
+                        dst.atLocalIdx(li).array(),
+                        amrex::makeArray4((value_type const*)(dptr), tag.dbox, ncomp),
+                        tag.dbox,
+                        Dim3{0,0,0}
+                    });
+                    dptr += tag.dbox.numPts() * ncomp * sizeof(value_type);
+
+                    if (maskfabs.size() > 0) {
+                        if (!maskfabs[li].isAllocated()) {
+                            maskfabs[li].resize(dst.atLocalIdx(li).box());
+                        }
+                        masks.push_back(maskfabs[li].array());
+                    }
+                }
+                BL_ASSERT(dptr <= pbuffer + offset + recv_size[k]);
+	    }
+        }
+    }
+
+    if (maskfabs.size() > 0) {
+        Gpu::FuseSafeGuard fsg(maskfabs.size() >= Gpu::getFuseNumKernelsThreshold());
+        for (Gpu::StreamIter sit(maskfabs.size()); sit.isValid(); ++sit) {
+            BaseFab<int>& mskfab = maskfabs[sit()];
+            const Array4<int>& msk = mskfab.array();
+            const Box& bx = mskfab.box();
+            amrex::ParallelFor(Gpu::KernelInfo().setFusible(true), bx,
+            [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+            {
+                msk(i,j,k) = 0;
+            });
+        }
+        Gpu::LaunchFusedKernels();
+    }
+
+    if (op == FabArrayBase::COPY)
+    {
+        if (is_thread_safe) {
+            detail::fab_to_fab<value_type>(recv_copy_tags, 0, dcomp, ncomp,
+                                           detail::CellStore<value_type>());
+        } else {
+            detail::fab_to_fab_atomic_cpy<value_type>(recv_copy_tags, 0, dcomp, ncomp, masks);
+        }
+    }
+    else
+    {
+        if (is_thread_safe) {
+            detail::fab_to_fab<value_type>(recv_copy_tags, 0, dcomp, ncomp,
+                                           detail::CellAdd<value_type>());
+        } else {
+            detail::fab_to_fab_atomic_add<value_type>(recv_copy_tags, 0, dcomp, ncomp, masks);
+        }
+    }
+
+    // There is Gpu::synchronize in fab_to_fab.
+
+    if (pbuffer != recv_data[0]) {
+        The_Arena()->free(pbuffer);
+    }
+}
+
+/* end JORDI section */
+
 #endif /* AMREX_USE_MPI */
 
 #endif
